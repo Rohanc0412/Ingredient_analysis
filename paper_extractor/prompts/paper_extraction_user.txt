@@ -1,0 +1,5 @@
+Input
+
+The following text is the research paper content:
+
+{paper_text}

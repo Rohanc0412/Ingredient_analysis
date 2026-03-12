@@ -1,0 +1,14 @@
+.env
+backups/
+paper_research_response/cache/
+paper_research_response/text/
+.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+input/
+output/
