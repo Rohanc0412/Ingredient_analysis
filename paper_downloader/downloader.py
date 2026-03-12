@@ -19,7 +19,7 @@ from helpers.logging_utils import get_logger
 EMAIL = "gowdarohan69@gmail.com"  # change this
 HEADLESS = False
 MANUAL_ASSIST = True
-MANUAL_ASSIST_TIMEOUT_S = 240
+MANUAL_ASSIST_TIMEOUT_S = 120
 SAVE_BLOCKED_HTML = False
 
 # Download step timeouts (these apply to the main automatic flow):
@@ -277,45 +277,36 @@ async def try_download_pdf_via_playwright_request(context: BrowserContext, pdf_u
         return False, f"playwright-request: {e}"
 
 async def try_download_pdf_via_playwright_page(context: BrowserContext, page, pdf_url: str, out_path: Path):
-    for attempt in range(1, 3):
+    try:
+        async with page.expect_download(timeout=40_000) as download_info:
+            resp = await page.goto(pdf_url, wait_until="domcontentloaded", timeout=40_000)
+        download = await download_info.value
+        await download.save_as(str(out_path))
+        return True, f"playwright-page: saved {out_path}"
+    except PlaywrightError:
         try:
-            async with page.expect_download(timeout=40_000) as download_info:
-                resp = await page.goto(pdf_url, wait_until="domcontentloaded", timeout=40_000)
-            download = await download_info.value
-            await download.save_as(str(out_path))
+            resp = await page.goto(pdf_url, wait_until="domcontentloaded", timeout=40_000)
+        except PlaywrightError as e:
+            return False, f"playwright-page: {e}"
+
+        if resp is None:
+            return False, "playwright-page: no response"
+
+        try:
+            ctype = (resp.headers.get("content-type") or "").lower()
+            data = await resp.body()
+        except PlaywrightError as e2:
+            return False, f"playwright-page: {e2}"
+
+        if ("application/pdf" in ctype) or data.startswith(b"%PDF-"):
+            out_path.write_bytes(data)
             return True, f"playwright-page: saved {out_path}"
-        except PlaywrightError:
-            try:
-                resp = await page.goto(pdf_url, wait_until="domcontentloaded", timeout=40_000)
-            except PlaywrightError as e:
-                if attempt == 2:
-                    return False, f"playwright-page: {e}"
-                try:
-                    await page.wait_for_timeout(1500)
-                except PlaywrightError:
-                    pass
-                continue
 
-            if resp is None:
-                return False, "playwright-page: no response"
-
-            try:
-                ctype = (resp.headers.get("content-type") or "").lower()
-                data = await resp.body()
-            except PlaywrightError as e2:
-                if attempt == 2:
-                    return False, f"playwright-page: {e2}"
-                continue
-
-            if ("application/pdf" in ctype) or data.startswith(b"%PDF-"):
-                out_path.write_bytes(data)
-                return True, f"playwright-page: saved {out_path}"
-
-            if SAVE_BLOCKED_HTML:
-                blocked = out_path.with_suffix(".blocked.html")
-                blocked.write_bytes(data[:500_000])
-                return False, f"playwright-page: not a PDF (content-type={ctype}). Saved {blocked}"
-            return False, f"playwright-page: not a PDF (content-type={ctype}). Not downloaded."
+        if SAVE_BLOCKED_HTML:
+            blocked = out_path.with_suffix(".blocked.html")
+            blocked.write_bytes(data[:500_000])
+            return False, f"playwright-page: not a PDF (content-type={ctype}). Saved {blocked}"
+        return False, f"playwright-page: not a PDF (content-type={ctype}). Not downloaded."
 
 def looks_like_cloudflare_challenge(html: str) -> bool:
     h = (html or "").lower()
@@ -548,6 +539,9 @@ async def try_download_with_manual_assist(playwright, pdf_url: str, out_path: Pa
                 await asyncio.wait_for(context.close(), timeout=15)
             except TimeoutError:
                 pass
+            except PlaywrightError:
+                # The manual-assist browser may already be closed by the user.
+                pass
         finally:
             shutil.rmtree(user_data_dir, ignore_errors=True)
             shutil.rmtree(downloads_dir, ignore_errors=True)
@@ -566,46 +560,29 @@ async def download_pdf_with_fallbacks(
         if log is not None:
             log(message)
 
-    _log("Trying direct download.")
-    ok, msg = try_download_pdf_via_requests(pdf_url, out_path)
-    if ok:
-        _log(f"Saved via direct download: {out_path}")
-        return True, msg, None
-
-    first_failure = msg
-    _log(f"Direct download failed: {concise_reason(msg)}")
-
-    _log("Trying browser request.")
-    ok2, msg2 = await try_download_pdf_via_playwright_request(context, pdf_url, out_path)
-
-    if ok2:
-        _log(f"Saved via browser request: {out_path}")
-        return True, msg2, first_failure
-    _log(f"Browser request failed: {concise_reason(msg2)}")
-
     _log("Trying browser tab.")
     if not page.is_closed():
-        ok3, msg3 = await try_download_pdf_via_playwright_page(context, page, pdf_url, out_path)
+        ok, msg = await try_download_pdf_via_playwright_page(context, page, pdf_url, out_path)
     else:
         page = await context.new_page()
-        ok3, msg3 = await try_download_pdf_via_playwright_page(context, page, pdf_url, out_path)
+        ok, msg = await try_download_pdf_via_playwright_page(context, page, pdf_url, out_path)
 
-    if ok3:
+    if ok:
         _log(f"Saved via browser tab: {out_path}")
-        return True, msg3, first_failure
-    _log(f"Browser tab failed: {concise_reason(msg3)}")
+        return True, msg, None
+    _log(f"Browser tab failed: {concise_reason(msg)}")
 
     allow_manual = MANUAL_ASSIST if manual_assist is None else bool(manual_assist)
     if allow_manual:
         _log("Trying manual assist.")
-        ok4, msg4 = await try_download_with_manual_assist(playwright, pdf_url, out_path)
-        if ok4:
+        ok2, msg2 = await try_download_with_manual_assist(playwright, pdf_url, out_path)
+        if ok2:
             _log(f"Saved via manual assist: {out_path}")
-            return True, msg4, first_failure
-        _log(f"Manual assist failed: {concise_reason(msg4)}")
-        return False, f"{msg2}; then {msg3}; then {msg4}", first_failure
+            return True, msg2, msg
+        _log(f"Manual assist failed: {concise_reason(msg2)}")
+        return False, f"{msg}; then {msg2}", msg
 
-    return False, f"{msg2}; then {msg3}", first_failure
+    return False, msg, msg
 
 async def main():
     started_at = datetime.now()
@@ -639,205 +616,282 @@ async def main():
                 m = (msg or "").lower()
                 return ("manual-assist: canceled by user" in m) or ("manual-assist: browser closed by user" in m)
 
-            for idx_item, item in enumerate(papers, start=1):
-                if isinstance(item, str):
-                    doi = item
-                    source_preference = None
-                    explicit_pdf_url = None
-                    ingredient = "unknown_ingredient"
-                    input_filename = None
-                    source_url = None
-                else:
-                    doi = (item or {}).get("doi")
-                    source_preference = (item or {}).get("source")
-                    explicit_pdf_url = (item or {}).get("pdf_url")
-                    ingredient = (item or {}).get("ingredient") or "unknown_ingredient"
-                    input_filename = (item or {}).get("filename")
-                    source_url = (item or {}).get("source_url")
+            async def ensure_browser_session() -> None:
+                nonlocal browser, context, page
+                try:
+                    if not page.is_closed():
+                        _ = context.pages
+                        return
+                except PlaywrightError:
+                    pass
 
-                doi_str = str(doi).strip()
-                doi_present = bool(doi_str) and doi_str.lower() not in ("n/a", "na", "none", "null")
+                try:
+                    await context.close()
+                except Exception:
+                    pass
 
-                explicit_pdf_url = (str(explicit_pdf_url).strip() if explicit_pdf_url else None) or None
-
-                doi_is_oa = None
-                doi_pdf_url = None
-                doi_resolved_source = None
-                doi_host_type = None
-                doi_resolve_err = None
-
-                # Resolve DOI (if present) to a PDF URL and also capture a hostname-based resolved_source for debugging.
-                if doi_present:
+                try:
+                    context = await browser.new_context(accept_downloads=True)
+                except Exception:
                     try:
-                        doi_is_oa, doi_pdf_url, doi_resolved_source, doi_host_type, doi_resolve_err = resolve_pdf_source(
-                            doi_str,
-                            EMAIL,
-                            source_preference,
-                        )
-                    except Exception as e:
-                        doi_pdf_url = None
-                        doi_resolve_err = f"DOI resolve: {type(e).__name__}: {e}"
+                        await browser.close()
+                    except Exception:
+                        pass
+                    browser = await p.chromium.launch(headless=HEADLESS)
+                    context = await browser.new_context(accept_downloads=True)
+                page = await context.new_page()
 
-                # Folder grouping always follows the input paper's "source".
-                output_source = safe_dirname(str(source_preference or "unknown_source"))
-                ingredient = safe_dirname(str(ingredient))
-
+            for idx_item, item in enumerate(papers, start=1):
+                doi = None
+                source_preference = None
+                explicit_pdf_url = None
+                ingredient = "unknown_ingredient"
+                input_filename = None
+                source_url = None
+                output_source = "unknown_source"
+                doi_str = ""
+                attempts: list[dict] = []
+                row = None
                 label = paper_label(
                     idx_item=idx_item,
                     total=total,
                     ingredient=ingredient,
                     source=output_source,
-                    doi=doi_str if doi_str else None,
+                    doi=None,
                 )
 
-                log("")
-                log(label)
-                if doi_present:
+                try:
+                    await ensure_browser_session()
+
+                    if isinstance(item, str):
+                        doi = item
+                    else:
+                        doi = (item or {}).get("doi")
+                        source_preference = (item or {}).get("source")
+                        explicit_pdf_url = (item or {}).get("pdf_url")
+                        ingredient = (item or {}).get("ingredient") or "unknown_ingredient"
+                        input_filename = (item or {}).get("filename")
+                        source_url = (item or {}).get("source_url")
+
+                    doi_str = str(doi).strip()
+                    doi_present = bool(doi_str) and doi_str.lower() not in ("n/a", "na", "none", "null")
+
+                    explicit_pdf_url = (str(explicit_pdf_url).strip() if explicit_pdf_url else None) or None
+
+                    doi_is_oa = None
+                    doi_pdf_url = None
+                    doi_resolved_source = None
+                    doi_host_type = None
+                    doi_resolve_err = None
+
+                    # Resolve DOI (if present) to a PDF URL and also capture a hostname-based resolved_source for debugging.
+                    if doi_present:
+                        try:
+                            doi_is_oa, doi_pdf_url, doi_resolved_source, doi_host_type, doi_resolve_err = resolve_pdf_source(
+                                doi_str,
+                                EMAIL,
+                                source_preference,
+                            )
+                        except Exception as e:
+                            doi_pdf_url = None
+                            doi_resolve_err = f"DOI resolve: {type(e).__name__}: {e}"
+
+                    # Folder grouping always follows the input paper's "source".
+                    output_source = safe_dirname(str(source_preference or "unknown_source"))
+                    ingredient = safe_dirname(str(ingredient))
+
+                    label = paper_label(
+                        idx_item=idx_item,
+                        total=total,
+                        ingredient=ingredient,
+                        source=output_source,
+                        doi=doi_str if doi_str else None,
+                    )
+
+                    log("")
+                    log(label)
+                    if doi_present:
+                        if doi_pdf_url:
+                            details = "DOI resolved to a PDF URL"
+                            if doi_resolved_source:
+                                details += f" via {doi_resolved_source}"
+                            log(details + ".")
+                        else:
+                            log(f"DOI lookup failed: {concise_reason(doi_resolve_err or 'unknown')}")
+                    else:
+                        log("No DOI provided. Using the explicit PDF URL if available.")
+                    if explicit_pdf_url:
+                        log(f"Fallback PDF URL available via {source_key(None, explicit_pdf_url)}.")
+
+                    row = {
+                        "doi": doi,
+                        "is_oa": None,
+                        "pdf_url": None,
+                        "input_pdf_url": explicit_pdf_url,
+                        "doi_present": doi_present,
+                        "doi_is_oa": doi_is_oa,
+                        "doi_pdf_url": doi_pdf_url,
+                        "doi_resolved_source": doi_resolved_source,
+                        "doi_host_type": doi_host_type,
+                        "doi_resolve_error": doi_resolve_err,
+                        "ingredient": ingredient,
+                        "source": output_source,
+                        "resolved_source": None,
+                        "host_type": None,
+                        "resolve_error": doi_resolve_err,
+                        "ok": False,
+                        "msg": None,
+                    }
+
+                    # Fill initial resolution fields (may change if we fall back to explicit pdf_url).
+                    row["resolved_source"] = (
+                        doi_resolved_source if doi_pdf_url else (source_key(None, explicit_pdf_url) if explicit_pdf_url else None)
+                    )
+                    row["host_type"] = doi_host_type if doi_pdf_url else None
+                    row["resolve_error"] = doi_resolve_err
+
+                    if not (doi_pdf_url or explicit_pdf_url):
+                        if (source_preference or "").strip().lower() in ("google_scholar", "scholar", "google scholar"):
+                            row["msg"] = "No DOI-resolved PDF and no explicit pdf_url; Google Scholar auto-download is not supported."
+                        else:
+                            row["msg"] = doi_resolve_err or "No DOI-resolved PDF and no explicit pdf_url"
+                        failed_count += 1
+                        log(f"Failed: {concise_reason(row['msg'])}")
+                        results.append(row)
+                        continue
+
+                    out_dir = OUT_DIR / ingredient / output_source
+                    out_dir.mkdir(parents=True, exist_ok=True)
+
+                    if input_filename:
+                        filename = safe_filename(str(input_filename))
+                    else:
+                        filename = default_filename(doi_str if doi_present else None, (doi_pdf_url or explicit_pdf_url))
+
+                    out_path = ensure_unique_path(out_dir / filename)
+
+                    async def run_one(url: str, kind: str, *, is_oa_val, resolved_src, host_t, resolve_error):
+                        attempt_label = "DOI URL" if kind == "doi" else "fallback PDF URL"
+                        log(f"Attempting {attempt_label}.")
+                        ok, msg, first_failure = await download_pdf_with_fallbacks(
+                            p,
+                            context,
+                            page,
+                            url,
+                            out_path,
+                            manual_assist=bool(MANUAL_ASSIST),
+                            log=log,
+                        )
+                        aborted = (not ok) and manual_assist_aborted(msg)
+                        attempts.append(
+                            {
+                                "kind": kind,
+                                "pdf_url": url,
+                                "resolved_source": resolved_src,
+                                "host_type": host_t,
+                                "resolve_error": resolve_error,
+                                "manual_assist": bool(MANUAL_ASSIST),
+                                "ok": ok,
+                                "msg": msg,
+                                "first_failure": first_failure,
+                                "aborted": aborted,
+                            }
+                        )
+                        row["first_failure"] = first_failure
+                        if ok:
+                            row["ok"] = True
+                            row["msg"] = str(out_path)
+                            row["is_oa"] = is_oa_val
+                            row["pdf_url"] = url
+                            row["resolved_source"] = resolved_src
+                            row["host_type"] = host_t
+                            row["resolve_error"] = resolve_error
+                        return ok, msg, aborted
+
                     if doi_pdf_url:
-                        details = f"DOI resolved to a PDF URL"
-                        if doi_resolved_source:
-                            details += f" via {doi_resolved_source}"
-                        log(details + ".")
+                        ok, msg, aborted = await run_one(
+                            doi_pdf_url,
+                            "doi",
+                            is_oa_val=doi_is_oa,
+                            resolved_src=doi_resolved_source,
+                            host_t=doi_host_type,
+                            resolve_error=doi_resolve_err,
+                        )
+                        if aborted:
+                            row["attempts"] = attempts
+                            row["msg"] = msg
+                            skipped_count += 1
+                            log(f"Skipped: {concise_reason(msg)}")
+                            results.append(row)
+                            continue
+
+                    if (not row["ok"]) and explicit_pdf_url:
+                        ok, msg, aborted = await run_one(
+                            explicit_pdf_url,
+                            "explicit",
+                            is_oa_val=True,
+                            resolved_src=source_key(None, explicit_pdf_url),
+                            host_t=None,
+                            resolve_error=None,
+                        )
+                        if aborted:
+                            row["attempts"] = attempts
+                            row["msg"] = msg
+                            skipped_count += 1
+                            log(f"Skipped: {concise_reason(msg)}")
+                            results.append(row)
+                            continue
+
+                    if not row["ok"]:
+                        row["attempts"] = attempts
+                        row["msg"] = attempts[-1]["msg"] if attempts else (doi_resolve_err or "No OA PDF found")
+                        failed_count += 1
+                        log(f"Failed: {concise_reason(row['msg'])}")
+                        results.append(row)
                     else:
-                        log(f"DOI lookup failed: {concise_reason(doi_resolve_err or 'unknown')}")
-                else:
-                    log("No DOI provided. Using the explicit PDF URL if available.")
-                if explicit_pdf_url:
-                    log(f"Fallback PDF URL available via {source_key(None, explicit_pdf_url)}.")
-
-                row = {
-                    "doi": doi,
-                    "is_oa": None,
-                    "pdf_url": None,
-                    "input_pdf_url": explicit_pdf_url,
-                    "doi_present": doi_present,
-                    "doi_is_oa": doi_is_oa,
-                    "doi_pdf_url": doi_pdf_url,
-                    "doi_resolved_source": doi_resolved_source,
-                    "doi_host_type": doi_host_type,
-                    "doi_resolve_error": doi_resolve_err,
-                    "ingredient": ingredient,
-                    "source": output_source,
-                    "resolved_source": None,
-                    "host_type": None,
-                    "resolve_error": doi_resolve_err,
-                    "ok": False,
-                    "msg": None,
-                }
-
-                # Fill initial resolution fields (may change if we fall back to explicit pdf_url).
-                row["resolved_source"] = doi_resolved_source if doi_pdf_url else (source_key(None, explicit_pdf_url) if explicit_pdf_url else None)
-                row["host_type"] = doi_host_type if doi_pdf_url else None
-                row["resolve_error"] = doi_resolve_err
-
-                if not (doi_pdf_url or explicit_pdf_url):
-                    if (source_preference or "").strip().lower() in ("google_scholar", "scholar", "google scholar"):
-                        row["msg"] = "No DOI-resolved PDF and no explicit pdf_url; Google Scholar auto-download is not supported."
-                    else:
-                        row["msg"] = doi_resolve_err or "No DOI-resolved PDF and no explicit pdf_url"
-                    failed_count += 1
-                    log(f"Failed: {concise_reason(row['msg'])}")
-                    results.append(row)
-                    continue
-
-                out_dir = OUT_DIR / ingredient / output_source
-                out_dir.mkdir(parents=True, exist_ok=True)
-
-                if input_filename:
-                    filename = safe_filename(str(input_filename))
-                else:
-                    filename = default_filename(doi_str if doi_present else None, (doi_pdf_url or explicit_pdf_url))
-
-                out_path = ensure_unique_path(out_dir / filename)
-
-                attempts: list[dict] = []
-
-                async def run_one(url: str, kind: str, *, is_oa_val, resolved_src, host_t, resolve_error):
-                    label = "DOI URL" if kind == "doi" else "fallback PDF URL"
-                    log(f"Attempting {label}.")
-                    ok, msg, first_failure = await download_pdf_with_fallbacks(
-                        p,
-                        context,
-                        page,
-                        url,
-                        out_path,
-                        manual_assist=bool(MANUAL_ASSIST),
-                        log=log,
-                    )
-                    aborted = (not ok) and manual_assist_aborted(msg)
-                    attempts.append(
-                        {
-                            "kind": kind,
-                            "pdf_url": url,
-                            "resolved_source": resolved_src,
-                            "host_type": host_t,
-                            "resolve_error": resolve_error,
-                            "manual_assist": bool(MANUAL_ASSIST),
-                            "ok": ok,
-                            "msg": msg,
-                            "first_failure": first_failure,
-                            "aborted": aborted,
+                        row["attempts"] = attempts
+                        saved_count += 1
+                        log(f"Saved: {out_path}")
+                        results.append(row)
+                except Exception as e:
+                    msg = f"Unexpected error: {type(e).__name__}: {e}"
+                    logger.exception("Unexpected failure while processing %s", label)
+                    if row is None:
+                        row = {
+                            "doi": doi,
+                            "is_oa": None,
+                            "pdf_url": None,
+                            "input_pdf_url": explicit_pdf_url,
+                            "doi_present": bool(doi_str) and doi_str.lower() not in ("n/a", "na", "none", "null"),
+                            "doi_is_oa": None,
+                            "doi_pdf_url": None,
+                            "doi_resolved_source": None,
+                            "doi_host_type": None,
+                            "doi_resolve_error": None,
+                            "ingredient": safe_dirname(str(ingredient)),
+                            "source": safe_dirname(str(source_preference or output_source or "unknown_source")),
+                            "resolved_source": None,
+                            "host_type": None,
+                            "resolve_error": None,
+                            "ok": False,
+                            "msg": None,
                         }
-                    )
-                    row["first_failure"] = first_failure
-                    if ok:
-                        row["ok"] = True
-                        row["msg"] = str(out_path)
-                        row["is_oa"] = is_oa_val
-                        row["pdf_url"] = url
-                        row["resolved_source"] = resolved_src
-                        row["host_type"] = host_t
-                        row["resolve_error"] = resolve_error
-                    return ok, msg, aborted
-
-                if doi_pdf_url:
-                    ok, msg, aborted = await run_one(
-                        doi_pdf_url,
-                        "doi",
-                        is_oa_val=doi_is_oa,
-                        resolved_src=doi_resolved_source,
-                        host_t=doi_host_type,
-                        resolve_error=doi_resolve_err,
-                    )
-                    if aborted:
-                        row["attempts"] = attempts
-                        row["msg"] = msg
-                        skipped_count += 1
-                        log(f"Skipped: {concise_reason(msg)}")
-                        results.append(row)
-                        continue
-
-                if (not row["ok"]) and explicit_pdf_url:
-                    ok, msg, aborted = await run_one(
-                        explicit_pdf_url,
-                        "explicit",
-                        is_oa_val=True,
-                        resolved_src=source_key(None, explicit_pdf_url),
-                        host_t=None,
-                        resolve_error=None,
-                    )
-                    if aborted:
-                        row["attempts"] = attempts
-                        row["msg"] = msg
-                        skipped_count += 1
-                        log(f"Skipped: {concise_reason(msg)}")
-                        results.append(row)
-                        continue
-
-                if not row["ok"]:
                     row["attempts"] = attempts
-                    row["msg"] = attempts[-1]["msg"] if attempts else (doi_resolve_err or "No OA PDF found")
+                    row["msg"] = msg
                     failed_count += 1
-                    log(f"Failed: {concise_reason(row['msg'])}")
-                    results.append(row)
-                else:
-                    row["attempts"] = attempts
-                    saved_count += 1
-                    log(f"Saved: {out_path}")
+                    log("")
+                    log(label)
+                    log(f"Failed: {concise_reason(msg)}")
                     results.append(row)
 
-            await context.close()
-            await browser.close()
+            try:
+                await context.close()
+            except PlaywrightError:
+                pass
+            try:
+                await browser.close()
+            except PlaywrightError:
+                pass
 
         safe_print("")
         safe_print(f"Download summary: total={total}, saved={saved_count}, failed={failed_count}, skipped={skipped_count}")
