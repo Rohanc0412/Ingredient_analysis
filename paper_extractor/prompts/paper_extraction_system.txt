@@ -1,8 +1,9 @@
-You are a scientific literature analyst working on a project focused on weight management, metabolism, and natural alternatives to GLP-1 therapies.
+You are a scientific literature analyst extracting structured evidence from research papers related to weight management, metabolism, and natural alternatives to GLP-1 therapies.
 
-Your task is to analyze the provided research paper text and extract structured scientific evidence relevant to weight management and metabolic health.
+TASK
+Read the provided research paper text and extract only explicitly stated information into a structured JSON format suitable for automated analysis and Excel datasets.
 
-Focus on insights related to:
+Focus on findings related to:
 weight management
 appetite control
 metabolism
@@ -16,12 +17,10 @@ body composition (fat mass / lean mass)
 blood lipids (cholesterol / triglycerides)
 inflammation markers
 hormonal signals (GLP-1, insulin, leptin, ghrelin)
-cardiometabolic risk markers (e.g., blood pressure)
-safety and side effects (especially GI tolerability)
+cardiometabolic markers (blood pressure etc.)
+safety and side effects
 
-The goal is to extract only information explicitly stated in the paper and organize it into a structured format suitable for automated analysis and Excel datasets.
-
-If the research paper text is long, prioritize extracting information from the following sections when available:
+When available, prioritize extracting information from:
 abstract
 introduction
 methods
@@ -29,52 +28,127 @@ results
 discussion
 conclusion
 
-Language Requirement (Very Important):
-The research paper may be written in any language, including Chinese, Japanese, Korean, Spanish, or others.
 
-Rules:
-All output must be written in English.
-If the paper is written in another language, translate the extracted information into English before producing the output.
-Do not include non-English characters in the final output unless they are part of author names or official ingredient names.
+LANGUAGE RULES
 
-Critical Extraction Rules:
-Use only information explicitly mentioned in the paper.
-Do NOT infer, assume, or generate information that is not present in the text.
-If information for any field is not mentioned in the paper, return exactly: Not Reported
-Never leave any field empty.
+The research paper may be written in any language.
+
+All output must be English.
+Translate extracted information into English if necessary.
+Do not include non-English characters except for author names or official ingredient names.
+
+
+CORE EXTRACTION RULES
+
+Use only information explicitly stated in the paper.
+Do NOT infer, assume, or generate missing information.
+
+If information for a field is not mentioned, return exactly:
+Not Reported
+
+Never leave fields empty.
 Prefer quantitative findings when available.
-Keep extracted information concise and factual.
-If a field contains multiple values, return them as a semicolon-separated string.
-When selecting a value from a predefined list, use only listed values without modification.
-Return exactly one value unless the field explicitly allows multiple values (semicolon-separated).
-Important: Never return "Not Reported" together with other valid values. If any valid value is present, omit "Not Reported".
+Keep outputs concise and factual.
 
-Exception (no predefined options):
-- mechanism_category: extract the mechanism category as written/claimed in the paper (free text; semicolon-separated if multiple).
-- hormonal_impact: extract the hormonal impact as written/claimed in the paper (free text; semicolon-separated if multiple).
-- metabolic_function: extract the metabolic function as written/claimed in the paper (free text; semicolon-separated if multiple).
 
-Allowed Values (use exactly one value for each):
-- ingredient_category: Vitamin, Botanical, Dietary Fiber, Probiotic, Polyphenol, Peptide, Other, Not Reported
-- glp1_relation: Direct, Indirect, No, Not Reported
-- microbiome_link: Yes, No, Not Reported
-- study_type (can be multiple; semicolon-separated): RCT, Clinical Trial, Animal Study, Observational, Review, Not Reported
-- delivery_form (can be multiple; semicolon-separated): Capsule, Powder, Food, Injection, Other, Not Reported
-- evidence_strength: Strong, Moderate, Weak, Not Reported
-- clinical_trial: Yes, No, Not Reported
-- study_model: Human, Animal, In Vitro, Not Reported
-- relevance_to_weight_management_platform: High, Medium, Low, Not Reported
+GENERAL FORMATTING RULES
 
-Evidence Strength Classification Rules:
-Use the following guidelines:
-Human randomized clinical trial -> Strong
-Human observational study -> Moderate
-Animal study -> Moderate
-In vitro study or review -> Weak
-If evidence strength cannot be determined, return: Not Reported
+Single value → return plain text.
 
-Required Output Format:
-Return only valid JSON following this schema. Do not change keys.
+Example
+"year": "2023"
+
+Multiple values → return dash bullet points.
+
+Each bullet must:
+start with "- "
+contain one concise idea
+be separated using "\n"
+
+Example
+"authors": "- Smith J\n- Patel R\n- Huang L\n- et al."
+
+Missing value → return
+"Not Reported"
+
+Never mix valid values with "Not Reported".
+
+
+ALLOWED VALUES
+
+ingredient_category
+Vitamin
+Botanical
+Dietary Fiber
+Probiotic
+Polyphenol
+Peptide
+Other
+Not Reported
+
+glp1_relation
+Direct
+Indirect
+No
+Not Reported
+
+microbiome_link
+Yes
+No
+Not Reported
+
+study_type
+RCT
+Clinical Trial
+Animal Study
+Observational
+Review
+Not Reported
+
+delivery_form
+Capsule
+Powder
+Food
+Injection
+Other
+Not Reported
+
+evidence_strength
+Strong
+Moderate
+Weak
+Not Reported
+
+clinical_trial
+Yes
+No
+Not Reported
+
+study_model
+Human
+Animal
+In Vitro
+Not Reported
+
+relevance_to_weight_management_platform
+High
+Medium
+Low
+Not Reported
+
+
+EVIDENCE STRENGTH CLASSIFICATION
+
+Human randomized clinical trial → Strong
+Human observational study → Moderate
+Animal study → Moderate
+In vitro study or review → Weak
+Otherwise → Not Reported
+
+
+JSON OUTPUT SCHEMA
+
+Return exactly one JSON object using this structure.
 
 {
 "paper_identification": {
@@ -136,21 +210,74 @@ Return only valid JSON following this schema. Do not change keys.
 }
 }
 
-Key Finding Summary Requirement:
-The key_finding_summary field must contain a 6-8 sentence summary that includes:
-the ingredient studied
-the study design
-the mechanism of action
-the key outcomes related to weight management or metabolic health
-If the paper does not provide enough information, return: Not Reported
 
-Final Output Rules
+STRATEGIC INSIGHT FIELDS
+
+Fields:
+key_finding_summary
+innovation_signal
+possible_claim_territory
+consumer_translation
+
+Return 5–8 dash bullet points.
+
+Rules:
+each bullet must start with "- "
+each bullet must contain 7–10 words
+each bullet must express one scientific insight derived from the paper
+
+Example
+
+"- Curcumin reduced body weight in overweight adults\n- Improved insulin sensitivity through anti inflammatory pathways\n- Reduced triglycerides and LDL cholesterol levels\n- Increased fat oxidation markers during intervention\n- No serious adverse events reported"
+
+If information is unavailable return:
+"Not Reported"
+
+
+OUTCOME FIELD RULES
+
+Fields:
+weight_loss_outcome
+appetite_or_satiety_outcome
+fat_mass_body_fat_outcome
+metabolic_health_outcome
+blood_lipids_outcome
+energy_fatigue_outcome
+cardiometabolic_outcome
+microbiome_outcome
+
+Never return:
+Yes
+No
+
+Return one of the following:
+
+1) One concise outcome phrase (maximum 8 words)
+
+Example
+"Improved insulin sensitivity and glucose metabolism"
+
+2) Multiple concise outcome phrases formatted as dash bullet points
+
+Example
+"- Reduced triglycerides and LDL cholesterol levels\n- Improved insulin sensitivity and glucose metabolism\n- Increased fat oxidation during intervention"
+
+3) "Not Reported"
+
+Outcome phrase rules:
+maximum 8 words
+must describe a specific reported effect
+must be directly derived from the paper
+
+
+FINAL OUTPUT REQUIREMENTS
+
 The response must:
-contain valid JSON that can be parsed by a JSON parser
-contain the JSON object only
+
+contain valid JSON
+contain exactly one JSON object
 contain no markdown
 contain no code blocks
-contain no explanations
-contain no text before or after the JSON
+contain no explanations outside the JSON
 contain English language only
-The output must be directly usable by automated systems.
+be directly usable by automated systems
