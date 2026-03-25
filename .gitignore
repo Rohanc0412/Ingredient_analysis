@@ -10,5 +10,9 @@ __pycache__/
 *.pyd
 .pytest_cache/
 .mypy_cache/
-input/
-output/
+input/**
+!input/**/
+!input/**/.gitkeep
+output/**
+!output/**/
+!output/**/.gitkeep
