@@ -11,6 +11,7 @@ from pathlib import Path
 
 from helpers.env import load_dotenv
 from helpers.logging_utils import get_logger
+from helpers.pdf_metadata import infer_pdf_source_key, pdf_metadata_path, resolve_metadata_root
 
 
 DEFAULT_PDF_ROOT = Path("input") / "pdfs"
@@ -60,14 +61,7 @@ def sha256_file(path: Path) -> str:
 
 
 def detect_source_name(pdf_root: Path, pdf_path: Path) -> str:
-    try:
-        rel = pdf_path.relative_to(pdf_root)
-    except Exception:
-        return ""
-    parts = rel.parts
-    if len(parts) >= 2:
-        return str(parts[1]).strip().lower()
-    return ""
+    return infer_pdf_source_key(pdf_root, pdf_path) or ""
 
 
 def canonical_sort_key(pdf_root: Path, pdf_path: Path) -> tuple[int, str]:
@@ -167,12 +161,18 @@ def write_report(report_json: Path, payload: dict) -> None:
 def quarantine_duplicates(*, pdf_root: Path, quarantine_dir: Path, duplicate_groups: list[DuplicateGroup], dry_run: bool) -> None:
     if dry_run:
         return
+    quarantine_metadata_root = resolve_metadata_root(quarantine_dir, include_storage_name=True)
     for group in duplicate_groups:
         for path in group.duplicate_paths:
             rel = path.relative_to(pdf_root)
             dest = quarantine_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(path), str(dest))
+            meta_src = pdf_metadata_path(pdf_root=pdf_root, pdf_path=path)
+            if meta_src.exists():
+                meta_dest = pdf_metadata_path(pdf_root=quarantine_dir, pdf_path=dest, metadata_root=quarantine_metadata_root)
+                meta_dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(meta_src), str(meta_dest))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import sys
@@ -14,8 +15,11 @@ import requests
 from playwright.async_api import async_playwright
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import BrowserContext
+from helpers.env import load_dotenv
 from helpers.logging_utils import get_logger
+from helpers.pdf_metadata import canonicalize_pdf_source_key, resolve_metadata_root, write_pdf_metadata
 
+ROOT = Path(__file__).resolve().parent.parent
 EMAIL = "gowdarohan69@gmail.com"  # change this
 HEADLESS = False
 MANUAL_ASSIST = True
@@ -50,6 +54,60 @@ def format_duration(total_seconds: float) -> str:
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in {"1", "true", "yes", "on"}
+
+
+def should_include_source_dir() -> bool:
+    return _env_flag("PAPER_DOWNLOADER_INCLUDE_SOURCE_DIR", default=True)
+
+
+def resolve_output_dir(
+    *,
+    out_root: Path,
+    ingredient: str,
+    output_source: str,
+    include_source_dir: bool | None = None,
+) -> Path:
+    if include_source_dir is None:
+        include_source_dir = should_include_source_dir()
+    if include_source_dir:
+        return out_root / ingredient / output_source
+    return out_root / ingredient
+
+
+def write_download_metadata(
+    pdf_path: Path,
+    *,
+    pdf_root: Path,
+    ingredient: str,
+    output_source: str,
+    source_preference: str | None,
+    source_url: str | None,
+    row: dict,
+) -> Path:
+    payload = {
+        "ingredient": ingredient,
+        "source": canonicalize_pdf_source_key(output_source) or "unknown_source",
+        "source_folder": output_source,
+        "source_preference": source_preference,
+        "doi": row.get("doi"),
+        "is_oa": row.get("is_oa"),
+        "pdf_url": row.get("pdf_url"),
+        "input_pdf_url": row.get("input_pdf_url"),
+        "source_url": source_url,
+        "resolved_source": row.get("resolved_source"),
+        "host_type": row.get("host_type"),
+        "resolve_error": row.get("resolve_error"),
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    metadata_root = resolve_metadata_root(pdf_root)
+    return write_pdf_metadata(pdf_root=pdf_root, pdf_path=pdf_path, payload=payload, metadata_root=metadata_root)
 
 
 def concise_reason(message: str | None, max_len: int = 140) -> str:
@@ -588,7 +646,14 @@ async def main():
     started_at = datetime.now()
     started_perf = time.perf_counter()
     exit_code = 0
+    load_dotenv(ROOT / ".env", override=False)
+    include_source_dir = should_include_source_dir()
     safe_print(f"Pipeline started at {format_timestamp(started_at)}")
+    safe_print(
+        "PDF output layout: input/pdfs/<ingredient>/<source>/<filename>.pdf"
+        if include_source_dir
+        else "PDF output layout: input/pdfs/<ingredient>/<filename>.pdf"
+    )
 
     try:
         papers = load_papers(PAPER_LINKS_DIR)
@@ -760,7 +825,12 @@ async def main():
                         results.append(row)
                         continue
 
-                    out_dir = OUT_DIR / ingredient / output_source
+                    out_dir = resolve_output_dir(
+                        out_root=OUT_DIR,
+                        ingredient=ingredient,
+                        output_source=output_source,
+                        include_source_dir=include_source_dir,
+                    )
                     out_dir.mkdir(parents=True, exist_ok=True)
 
                     if input_filename:
@@ -850,6 +920,18 @@ async def main():
                         results.append(row)
                     else:
                         row["attempts"] = attempts
+                        try:
+                            write_download_metadata(
+                                out_path,
+                                pdf_root=OUT_DIR,
+                                ingredient=ingredient,
+                                output_source=output_source,
+                                source_preference=source_preference,
+                                source_url=source_url,
+                                row=row,
+                            )
+                        except Exception as meta_exc:
+                            log(f"Warning: Could not write PDF metadata. Reason: {type(meta_exc).__name__}: {meta_exc}")
                         saved_count += 1
                         log(f"Saved: {out_path}")
                         results.append(row)

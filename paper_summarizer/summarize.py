@@ -10,8 +10,8 @@ from datetime import datetime
 from pathlib import Path
 
 from helpers.env import load_dotenv
-from helpers.llm_openrouter import OpenRouterClient, load_llm_config
-from helpers.logging_utils import get_logger
+from helpers.llm_openrouter import LLMClient, LLMUsageTracker, load_llm_config
+from helpers.logging_utils import get_logger, resolve_log_dir
 from helpers.pdf_text_extract import ExtractedText, PdfTextExtractError, extract_text_with_page_markers
 from helpers.rate_limiter import RateLimiter
 from paper_extractor.schema import NOT_AVAILABLE
@@ -75,6 +75,7 @@ class _SummaryResult:
 async def main(argv: list[str] | None = None) -> int:
     started_at = datetime.now()
     started_perf = time.perf_counter()
+    usage_tracker: LLMUsageTracker | None = None
     safe_print(f"Pipeline started at {format_timestamp(started_at)}")
 
     _configure_stdout_utf8()
@@ -180,8 +181,8 @@ async def main(argv: list[str] | None = None) -> int:
         if total == 0:
             return 0
 
-        config = load_llm_config()
-        model_summary = (os.environ.get("OPENROUTER_MODEL_SUMMARY") or "").strip() or config.model
+        config = load_llm_config(target="summary")
+        model_summary = config.model
 
         calls_per_min = max(1, int(args.llm_calls_per_minute))
         limiter = RateLimiter(min_spacing_s=(60.0 / calls_per_min))
@@ -191,6 +192,7 @@ async def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             workers = 1
             llm_max_inflight = 1
+        usage_tracker = LLMUsageTracker(run_name="paper_summarizer")
 
         def make_logger(ref_number: int, relative_path: str, log_lines: list[str]):
             prefix = f"[{ref_number}/{total}] {relative_path} - "
@@ -200,7 +202,7 @@ async def main(argv: list[str] | None = None) -> int:
 
             return log
 
-        async def process_one(ref_number: int, pdf_path: Path, llm_sema: asyncio.Semaphore, client: OpenRouterClient, log) -> _SummaryResult:
+        async def process_one(ref_number: int, pdf_path: Path, llm_sema: asyncio.Semaphore, client: LLMClient, log) -> _SummaryResult:
             rel = str(pdf_path.relative_to(pdf_root))
             extract_timeout_s = max(1, int(args.pdf_extract_timeout_s))
             process_timeout_s = max(extract_timeout_s, int(args.pdf_process_timeout_s))
@@ -264,14 +266,8 @@ async def main(argv: list[str] | None = None) -> int:
                             )
                         finally:
                             llm_sema.release()
-                        if usage.input_tokens is not None or usage.output_tokens is not None or usage.total_tokens is not None:
-                            parts: list[str] = []
-                            if usage.input_tokens is not None:
-                                parts.append(f"input={usage.input_tokens}")
-                            if usage.output_tokens is not None:
-                                parts.append(f"output={usage.output_tokens}")
-                            if usage.total_tokens is not None:
-                                parts.append(f"total={usage.total_tokens}")
+                        parts = usage.log_parts()
+                        if parts:
                             log("LLM tokens: " + ", ".join(parts))
                     except Exception as e:
                         log(f"LLM error while generating summary: {type(e).__name__}: {e}")
@@ -326,7 +322,7 @@ async def main(argv: list[str] | None = None) -> int:
 
             return _SummaryResult(ref_number, rel, sha, summary_text)
 
-        async with OpenRouterClient(config, limiter=limiter) as client:
+        async with LLMClient(config, limiter=limiter, usage_tracker=usage_tracker) as client:
             llm_sema = asyncio.Semaphore(llm_max_inflight)
 
             if workers == 1 or total == 1:
@@ -445,6 +441,13 @@ async def main(argv: list[str] | None = None) -> int:
                 return 1
             return 0
     finally:
+        if usage_tracker is not None:
+            try:
+                usage_log_path = usage_tracker.append_jsonl(resolve_log_dir() / "llm_usage.jsonl")
+                safe_print(usage_tracker.format_summary())
+                safe_print(f"LLM usage history appended to: {usage_log_path}")
+            except Exception as e:
+                safe_print(f"Warning: Could not persist LLM usage summary. Reason: {type(e).__name__}: {e}")
         ended_at = datetime.now()
         elapsed = time.perf_counter() - started_perf
         safe_print(f"Pipeline ended at {format_timestamp(ended_at)}")

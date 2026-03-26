@@ -36,6 +36,10 @@ def _normalize_log_filename(name: str) -> str:
     return (safe.strip("._") or "project") + ".log"
 
 
+def resolve_log_dir() -> Path:
+    return Path(os.environ.get("PROJECT_LOG_DIR") or DEFAULT_LOG_DIR).expanduser().resolve()
+
+
 def get_logger(name: str, *, prefix: str, stderr: bool = False) -> logging.Logger:
     load_dotenv(ROOT / ".env", override=False)
     logger = logging.getLogger(name)
@@ -48,7 +52,7 @@ def get_logger(name: str, *, prefix: str, stderr: bool = False) -> logging.Logge
     logger.addHandler(stream_handler)
 
     if _env_flag("PROJECT_LOG_TO_FILE", default=False):
-        log_dir = Path(os.environ.get("PROJECT_LOG_DIR") or DEFAULT_LOG_DIR).expanduser().resolve()
+        log_dir = resolve_log_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(log_dir / _normalize_log_filename(name), encoding="utf-8")
         file_handler.setFormatter(formatter)

@@ -17,8 +17,9 @@ from typing import Any
 
 from helpers.env import load_dotenv
 from helpers.excel_writer import load_workbook_context, save_workbook, write_paper_row
-from helpers.llm_openrouter import LLMUsage, OpenRouterClient, load_llm_config
-from helpers.logging_utils import get_logger
+from helpers.llm_openrouter import LLMClient, LLMUsage, LLMUsageTracker, load_llm_config
+from helpers.logging_utils import get_logger, resolve_log_dir
+from helpers.pdf_metadata import infer_pdf_source_key, normalize_pdf_source_label
 from helpers.pdf_text_extract import ExtractedText, PdfTextExtractError, extract_text_with_page_markers
 from helpers.rate_limiter import RateLimiter
 from .schema import NOT_AVAILABLE, coerce_row_values, flatten_llm_to_excel, normalize_headers
@@ -108,28 +109,11 @@ def derive_primary_ingredient(pdf_root: Path, pdf_path: Path) -> str | None:
 
 
 def derive_pdf_source_label(pdf_root: Path, pdf_path: Path) -> str:
-    """
-    Derive pdf_source from second-level folder under pdf_root:
-    pdf_root/<ingredient>/<source>/<file>.pdf
-    """
-    try:
-        rel = pdf_path.relative_to(pdf_root)
-    except Exception:
-        return NOT_AVAILABLE
-    parts = rel.parts
-    if len(parts) < 2:
-        return NOT_AVAILABLE
-    source_folder = (parts[1] or "").strip().lower()
-    if not source_folder:
-        return NOT_AVAILABLE
-    if source_folder == "china":
-        return "china article"
-    if source_folder == "google_scholar":
-        return "google scholar"
-    if source_folder == "pubmed":
-        return "pubmed"
-    normalized = source_folder.replace("_", " ").strip()
+    source_key = infer_pdf_source_key(pdf_root, pdf_path)
+    normalized = normalize_pdf_source_label(source_key)
     return normalized if normalized else NOT_AVAILABLE
+
+
 def apply_non_llm_fields(
     row: dict[str, str],
     *,
@@ -265,6 +249,7 @@ def _set_key_finding_note(row: dict[str, str], note: str, headers: list[str]) ->
 def main(argv: list[str] | None = None) -> int:
     started_at = datetime.now()
     started_perf = time.perf_counter()
+    usage_tracker: LLMUsageTracker | None = None
     safe_print(f"Pipeline started at {format_timestamp(started_at)}")
 
     _configure_stdout_utf8()
@@ -386,8 +371,16 @@ def main(argv: list[str] | None = None) -> int:
             xlsx_path = output_xlsx_path
             safe_print(f"Created analysis workbook from template: {xlsx_path}")
 
-        return asyncio.run(_run(args=args, xlsx_path=xlsx_path, pdf_root=pdf_root))
+        usage_tracker = LLMUsageTracker(run_name="paper_extractor")
+        return asyncio.run(_run(args=args, xlsx_path=xlsx_path, pdf_root=pdf_root, usage_tracker=usage_tracker))
     finally:
+        if usage_tracker is not None:
+            try:
+                usage_log_path = usage_tracker.append_jsonl(resolve_log_dir() / "llm_usage.jsonl")
+                safe_print(usage_tracker.format_summary())
+                safe_print(f"LLM usage history appended to: {usage_log_path}")
+            except Exception as e:
+                safe_print(f"Warning: Could not persist LLM usage summary. Reason: {type(e).__name__}: {e}")
         ended_at = datetime.now()
         elapsed = time.perf_counter() - started_perf
         safe_print(f"Pipeline ended at {format_timestamp(ended_at)}")
@@ -406,7 +399,7 @@ class _Result:
     log_lines: tuple[str, ...] = ()
 
 
-async def _run(*, args, xlsx_path: Path, pdf_root: Path) -> int:
+async def _run(*, args, xlsx_path: Path, pdf_root: Path, usage_tracker: LLMUsageTracker) -> int:
     ctx = load_workbook_context(xlsx_path)
     headers = normalize_headers(ctx.headers)
 
@@ -434,7 +427,7 @@ async def _run(*, args, xlsx_path: Path, pdf_root: Path) -> int:
     if total == 0:
         return 0
 
-    config = load_llm_config()
+    config = load_llm_config(target="extract")
     calls_per_min = max(1, int(args.llm_calls_per_minute))
     min_spacing_s = 60.0 / calls_per_min
     limiter = RateLimiter(min_spacing_s=min_spacing_s)
@@ -446,7 +439,7 @@ async def _run(*, args, xlsx_path: Path, pdf_root: Path) -> int:
         text_dir.mkdir(parents=True, exist_ok=True)
 
     system_prompt = build_system_prompt()
-    model_extract = (os.environ.get("OPENROUTER_MODEL_EXTRACT") or "").strip() or config.model
+    model_extract = config.model
 
     workers = max(1, int(args.workers or 1))
     llm_max_inflight = max(1, int(args.llm_max_inflight or 2))
@@ -475,19 +468,13 @@ async def _run(*, args, xlsx_path: Path, pdf_root: Path) -> int:
         return coerce_row_values(headers, row_base)
 
     def log_usage(log, usage: LLMUsage):
-        if usage.input_tokens is None and usage.output_tokens is None and usage.total_tokens is None:
+        parts = usage.log_parts()
+        if not parts:
             log("LLM tokens: (no usage info returned by provider)")
             return
-        parts: list[str] = []
-        if usage.input_tokens is not None:
-            parts.append(f"input={usage.input_tokens}")
-        if usage.output_tokens is not None:
-            parts.append(f"output={usage.output_tokens}")
-        if usage.total_tokens is not None:
-            parts.append(f"total={usage.total_tokens}")
         log("LLM tokens: " + ", ".join(parts))
 
-    async def process_one(ref_number: int, pdf_path: Path, llm_sema: asyncio.Semaphore, client: OpenRouterClient, log) -> _Result:
+    async def process_one(ref_number: int, pdf_path: Path, llm_sema: asyncio.Semaphore, client: LLMClient, log) -> _Result:
         rel = str(pdf_path.relative_to(pdf_root))
 
         sha = await asyncio.to_thread(sha256_file, pdf_path)
@@ -592,7 +579,7 @@ async def _run(*, args, xlsx_path: Path, pdf_root: Path) -> int:
         row_final = coerce_row_values(headers, row_flat)
         return _Result(ref_number, rel, sha, extracted.chars, pdf_source_label, row_final)
 
-    async with OpenRouterClient(config, limiter=limiter) as client:
+    async with LLMClient(config, limiter=limiter, usage_tracker=usage_tracker) as client:
         llm_sema = asyncio.Semaphore(llm_max_inflight)
 
         if total == 1 or workers == 1:
