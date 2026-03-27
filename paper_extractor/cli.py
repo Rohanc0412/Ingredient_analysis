@@ -17,6 +17,7 @@ from typing import Any
 
 from helpers.env import load_dotenv
 from helpers.excel_writer import load_workbook_context, save_workbook, write_paper_row
+from helpers.file_discovery import sorted_glob_files, sorted_rglob_files
 from helpers.llm_openrouter import LLMClient, LLMUsage, LLMUsageTracker, load_llm_config
 from helpers.logging_utils import get_logger, resolve_log_dir
 from helpers.pdf_metadata import infer_pdf_source_key, normalize_pdf_source_label
@@ -69,7 +70,7 @@ def sha256_file(path: Path) -> str:
 
 
 def discover_pdfs(pdf_root: Path) -> list[Path]:
-    return sorted([p for p in pdf_root.rglob("*.pdf") if p.is_file()])
+    return sorted_rglob_files(pdf_root, "*.pdf")
 
 
 def _norm_rel_path(p: str) -> str:
@@ -289,19 +290,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument(
             "--workers",
             type=int,
-            default=_env_int(
-                "PAPER_EXTRACT_WORKERS",
-                _env_int("PAPER_EXTRACTOR_EXTRACT_WORKERS", _env_int("PAPER_EXTRACTOR_WORKERS", 1)),
-            ),
+            default=_env_int("PAPER_EXTRACT_WORKERS", 1),
             help="Number of concurrent PDF workers (default: 1).",
         )
         parser.add_argument(
             "--llm-max-inflight",
             type=int,
-            default=_env_int(
-                "PAPER_EXTRACT_MAX_INFLIGHT",
-                _env_int("PAPER_EXTRACTOR_EXTRACT_LLM_MAX_INFLIGHT", _env_int("PAPER_EXTRACTOR_LLM_MAX_INFLIGHT", 2)),
-            ),
+            default=_env_int("PAPER_EXTRACT_MAX_INFLIGHT", 2),
             help="Max number of concurrent in-flight LLM HTTP requests (default: 2).",
         )
         parser.add_argument("--dump-text", action="store_true", help="Write extracted raw text to input/papers/text/.")
@@ -314,10 +309,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument(
             "--llm-calls-per-minute",
             type=int,
-            default=_env_int(
-                "PAPER_EXTRACT_CALLS_PER_MIN",
-                _env_int("PAPER_EXTRACTOR_EXTRACT_LLM_CALLS_PER_MINUTE", _env_int("PAPER_EXTRACTOR_LLM_CALLS_PER_MINUTE", 5)),
-            ),
+            default=_env_int("PAPER_EXTRACT_CALLS_PER_MIN", 5),
             help="Max LLM calls per minute (default: 5).",
         )
         parser.add_argument(
@@ -346,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
                 return path
 
             template_dir = DEFAULT_TEMPLATE_DIR.resolve()
-            matches = sorted(template_dir.glob(DEFAULT_TEMPLATE_GLOB))
+            matches = sorted_glob_files(template_dir, DEFAULT_TEMPLATE_GLOB)
             if not matches:
                 raise RuntimeError(
                     f"No template workbook found in {template_dir} matching {DEFAULT_TEMPLATE_GLOB}."

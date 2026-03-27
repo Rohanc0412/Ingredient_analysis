@@ -16,6 +16,7 @@ from playwright.async_api import async_playwright
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import BrowserContext
 from helpers.env import load_dotenv
+from helpers.file_discovery import sorted_glob_files
 from helpers.logging_utils import get_logger
 from helpers.pdf_metadata import canonicalize_pdf_source_key, resolve_metadata_root, write_pdf_metadata
 
@@ -146,7 +147,7 @@ def load_papers(paper_links_dir: Path) -> list[dict]:
     if not paper_links_dir.exists() or not paper_links_dir.is_dir():
         return papers
 
-    for path in sorted(paper_links_dir.glob("*.json"), key=lambda p: p.name.lower()):
+    for path in sorted_glob_files(paper_links_dir, "*.json"):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:

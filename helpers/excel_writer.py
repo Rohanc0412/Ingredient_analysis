@@ -59,15 +59,19 @@ def _find_paper_header_row(ws, *, max_scan_rows: int = 10) -> int:
     for row_idx in range(1, min(ws.max_row, max_scan_rows) + 1):
         values = [c.value for c in next(ws.iter_rows(min_row=row_idx, max_row=row_idx))]
         headers = {_normalize_header_name(v) for v in values if v is not None and str(v).strip()}
-        score = sum(
-            1
-            for required in ("Ref #", "Title", "Journal / Source", "Primary Ingredient")
-            if required in headers
-        )
+        score = _paper_header_score(headers)
         if score > best_score:
             best_score = score
             best_row = row_idx
     return best_row
+
+
+def _paper_header_score(headers: set[str]) -> int:
+    return sum(
+        1
+        for required in ("Ref #", "Title", "Journal / Source", "Primary Ingredient")
+        if required in headers
+    )
 
 
 def load_workbook_context(xlsx_path: Path) -> WorkbookContext:
@@ -93,9 +97,24 @@ def ensure_review_sheets(wb) -> dict[str, Any]:
         template_ws = wb[PAPER_SHEET]
         template_ws.title = LIT_REVIEW_ALL_SHEET
     else:
-        raise RuntimeError(
-            f"Workbook is missing required template/review sheet: {PAPER_SHEET} or {LIT_REVIEW_ALL_SHEET}"
-        )
+        best_ws = None
+        best_score = -1
+        for ws in wb.worksheets:
+            header_row_idx = _find_paper_header_row(ws)
+            values = [c.value for c in next(ws.iter_rows(min_row=header_row_idx, max_row=header_row_idx))]
+            headers = {_normalize_header_name(v) for v in values if v is not None and str(v).strip()}
+            score = _paper_header_score(headers)
+            if score > best_score:
+                best_score = score
+                best_ws = ws
+
+        if best_ws is not None and best_score >= 3:
+            template_ws = best_ws
+            template_ws.title = LIT_REVIEW_ALL_SHEET
+        else:
+            raise RuntimeError(
+                f"Workbook is missing required template/review sheet: {PAPER_SHEET} or {LIT_REVIEW_ALL_SHEET}"
+            )
 
     for sheet_name in REVIEW_SHEET_NAMES[1:]:
         if sheet_name not in wb.sheetnames:

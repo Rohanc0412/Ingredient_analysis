@@ -10,6 +10,7 @@ from openpyxl import load_workbook
 
 from helpers.excel_writer import apply_output_sheet_layout, autofit_workbook_with_excel, write_timestamped_copy
 from helpers.env import load_dotenv
+from helpers.file_discovery import sorted_glob_files
 from helpers.logging_utils import get_logger
 
 
@@ -47,7 +48,7 @@ def extract_answer(value):
 
 def load_records(input_dir: Path) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
-    for path in sorted(input_dir.glob("*.json")):
+    for path in sorted_glob_files(input_dir, "*.json"):
         payload = json.loads(path.read_text(encoding="utf-8"))
         fields = payload.get("fields", {})
         record = {

@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from helpers.env import load_dotenv
+from helpers.file_discovery import sorted_rglob_files
 from helpers.llm_openrouter import LLMClient, LLMUsageTracker, load_llm_config
 from helpers.logging_utils import get_logger, resolve_log_dir
 from helpers.pdf_text_extract import ExtractedText, PdfTextExtractError, extract_text_with_page_markers
@@ -48,7 +49,7 @@ def sha256_file(path: Path) -> str:
 
 
 def discover_pdfs(pdf_root: Path) -> list[Path]:
-    return sorted([p for p in pdf_root.rglob("*.pdf") if p.is_file()])
+    return sorted_rglob_files(pdf_root, "*.pdf")
 
 
 def derive_primary_ingredient(pdf_root: Path, pdf_path: Path) -> str | None:
@@ -109,28 +110,19 @@ async def main(argv: list[str] | None = None) -> int:
         parser.add_argument(
             "--workers",
             type=int,
-            default=_env_int(
-                "PAPER_SUMMARY_WORKERS",
-                _env_int("PAPER_EXTRACTOR_SUMMARY_WORKERS", _env_int("PAPER_EXTRACTOR_WORKERS", 1)),
-            ),
+            default=_env_int("PAPER_SUMMARY_WORKERS", 1),
             help="Number of concurrent PDF workers (default: 1).",
         )
         parser.add_argument(
             "--llm-max-inflight",
             type=int,
-            default=_env_int(
-                "PAPER_SUMMARY_MAX_INFLIGHT",
-                _env_int("PAPER_EXTRACTOR_SUMMARY_LLM_MAX_INFLIGHT", _env_int("PAPER_EXTRACTOR_LLM_MAX_INFLIGHT", 2)),
-            ),
+            default=_env_int("PAPER_SUMMARY_MAX_INFLIGHT", 2),
             help="Max number of concurrent in-flight LLM HTTP requests (default: 2).",
         )
         parser.add_argument(
             "--llm-calls-per-minute",
             type=int,
-            default=_env_int(
-                "PAPER_SUMMARY_CALLS_PER_MIN",
-                _env_int("PAPER_EXTRACTOR_SUMMARY_LLM_CALLS_PER_MINUTE", _env_int("PAPER_EXTRACTOR_LLM_CALLS_PER_MINUTE", 5)),
-            ),
+            default=_env_int("PAPER_SUMMARY_CALLS_PER_MIN", 5),
             help="Global max LLM request starts per minute.",
         )
         parser.add_argument(

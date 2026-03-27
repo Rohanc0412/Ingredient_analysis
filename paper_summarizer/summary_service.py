@@ -38,13 +38,16 @@ def build_summary_system_prompt(*, prompts_dir: Path, min_sentences: int, word_c
         )
     return (
         "You are a scientific literature analyst.\n"
-        "Write a detailed full-paper summary in English.\n"
+        "Write a complete, concise full-paper summary in English.\n"
         "Rules:\n"
         "- English only.\n"
         "- Use ONLY information explicitly present in the provided paper text (no inference).\n"
         f"- Must be at least {int(min_sentences)} complete sentences.\n"
+        "- Keep the total response strictly under 10000 output tokens.\n"
+        "- Include slightly more detail than a high-level executive summary, especially for methods, endpoints, results, limitations, and conclusions.\n"
+        "- Prefer concise grouped summaries over long repetitive catalogues.\n"
+        "- Output plain text only with section labels and compact paragraphs.\n"
         f"- Hard cap: {int(word_cap)} words.\n"
-        "- Output plain text only.\n"
     )
 
 

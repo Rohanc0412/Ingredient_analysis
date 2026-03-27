@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from helpers.env import load_dotenv
+from helpers.file_discovery import sorted_rglob_files
 from helpers.logging_utils import get_logger
 from helpers.pdf_metadata import infer_pdf_source_key, pdf_metadata_path, resolve_metadata_root
 
@@ -49,7 +50,7 @@ def format_log(message: str) -> str:
 
 
 def discover_pdfs(pdf_root: Path) -> list[Path]:
-    return sorted([p for p in pdf_root.rglob("*.pdf") if p.is_file()])
+    return sorted_rglob_files(pdf_root, "*.pdf")
 
 
 def sha256_file(path: Path) -> str:
