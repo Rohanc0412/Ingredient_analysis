@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from copy import copy
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
@@ -19,7 +24,7 @@ try:
     )
     from helpers.logging_utils import get_logger
 except ModuleNotFoundError:
-    from excel_writer import (
+    from helpers.excel_writer import (
         LIT_REVIEW_ALL_SHEET,
         LIT_REVIEW_CHINA_SHEET,
         LIT_REVIEW_GOOGLE_SHEET,
@@ -28,10 +33,7 @@ except ModuleNotFoundError:
         autofit_workbook_with_excel,
         write_timestamped_copy,
     )
-    from logging_utils import get_logger
-
-
-ROOT = Path(__file__).resolve().parent.parent
+    from helpers.logging_utils import get_logger
 DEFAULT_PAPER_XLSX = ROOT / "output" / "paper_wise_analysis" / "paper_sample_analysis.xlsx"
 DEFAULT_INGREDIENT_XLSX = ROOT / "output" / "ingredient_wise_analysis" / "matrix_weight_management.populated.xlsx"
 DEFAULT_OUTPUT_XLSX = ROOT / "output" / "ingredient_analysis_output.xlsx"

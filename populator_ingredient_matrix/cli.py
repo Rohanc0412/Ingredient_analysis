@@ -37,10 +37,55 @@ def normalize_key(value: str) -> str:
     return " ".join(text.split()).strip().casefold()
 
 
-def extract_answer(value):
+def _stringify_value(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        parts = [_stringify_value(item).strip() for item in value]
+        return "\n".join(part for part in parts if part)
+    return str(value)
+
+
+def extract_answer(field_name: str, value):
     if isinstance(value, dict):
-        answer = value.get("answer", "")
-        return "" if answer is None else str(answer)
+        answer = _stringify_value(value.get("answer")).strip()
+        if answer:
+            return answer
+
+        category = _stringify_value(value.get("category")).strip()
+        if category:
+            return category
+
+        normalized_field = normalize_key(field_name)
+        if normalized_field == normalize_key("Number of Clinical Studies"):
+            study_count = _stringify_value(value.get("study_count")).strip()
+            if study_count:
+                return study_count
+
+        summary = _stringify_value(value.get("summary")).strip()
+        if summary:
+            return summary
+
+        items = _stringify_value(value.get("items")).strip()
+        if items:
+            return items
+
+        dose_value = _stringify_value(value.get("value")).strip()
+        dose_unit = _stringify_value(value.get("unit")).strip()
+        dose_context = _stringify_value(value.get("context")).strip()
+        dose = " ".join(part for part in (dose_value, dose_unit) if part).strip()
+        if dose and dose_context:
+            return f"{dose}\n{dose_context}"
+        if dose:
+            return dose
+        if dose_context:
+            return dose_context
+
+        study_count = _stringify_value(value.get("study_count")).strip()
+        if study_count:
+            return study_count
+
+        return ""
     if value is None:
         return ""
     return str(value)
@@ -52,7 +97,7 @@ def load_records(input_dir: Path) -> list[dict[str, str]]:
         payload = json.loads(path.read_text(encoding="utf-8"))
         fields = payload.get("fields", {})
         record = {
-            normalize_key(key): extract_answer(value)
+            normalize_key(key): extract_answer(key, value)
             for key, value in fields.items()
         }
         ingredient = payload.get("ingredient")
