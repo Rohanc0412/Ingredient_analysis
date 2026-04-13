@@ -4,7 +4,7 @@ from pathlib import Path
 
 from helpers.pdf_metadata import write_pdf_metadata
 from paper_extractor.cli import derive_pdf_source_label
-from paper_extractor.schema import NOT_AVAILABLE
+from paper_extractor.schema import NOT_AVAILABLE, flatten_llm_to_excel
 
 
 class PaperExtractorTests(unittest.TestCase):
@@ -30,6 +30,75 @@ class PaperExtractorTests(unittest.TestCase):
             label = derive_pdf_source_label(root, pdf_path)
 
             self.assertEqual(NOT_AVAILABLE, label)
+
+    def test_flatten_llm_to_excel_uses_flat_template_keys(self):
+        headers = [
+            "Ingredient",
+            "Ingredient Category",
+            "Year",
+            "Title",
+            "Journal / Source",
+            "Population",
+        ]
+
+        row = flatten_llm_to_excel(
+            headers,
+            {
+                "Ingredient": "Resveratrol",
+                "Ingredient Category": "Polyphenol",
+                "Year": "2024",
+                "Title": "Example Title",
+                "Journal / Source": "Foods",
+                "Population": "Adults",
+            },
+            ref_number=1,
+            fallback_primary_ingredient="Fallback Ingredient",
+        )
+
+        self.assertEqual("Resveratrol", row["Ingredient"])
+        self.assertEqual("Polyphenol", row["Ingredient Category"])
+        self.assertEqual("2024", row["Year"])
+        self.assertEqual("Example Title", row["Title"])
+        self.assertEqual("Foods", row["Journal / Source"])
+        self.assertEqual("Adults", row["Population"])
+
+    def test_flatten_llm_to_excel_supports_primary_ingredient_alias(self):
+        headers = ["Ingredient", "Title"]
+
+        row = flatten_llm_to_excel(
+            headers,
+            {
+                "Primary Ingredient": "Urolithin A",
+                "Title": "Example Title",
+            },
+            ref_number=1,
+            fallback_primary_ingredient=None,
+        )
+
+        self.assertEqual("Urolithin A", row["Ingredient"])
+        self.assertEqual("Example Title", row["Title"])
+
+    def test_flatten_llm_to_excel_supports_nested_keys_without_hardcoded_mapping(self):
+        headers = ["Year", "Journal / Source", "Population"]
+
+        row = flatten_llm_to_excel(
+            headers,
+            {
+                "paper_identification": {
+                    "year": "2024",
+                    "journal_source": "Foods",
+                },
+                "study_design": {
+                    "population": "Adults",
+                },
+            },
+            ref_number=1,
+            fallback_primary_ingredient=None,
+        )
+
+        self.assertEqual("2024", row["Year"])
+        self.assertEqual("Foods", row["Journal / Source"])
+        self.assertEqual("Adults", row["Population"])
 
 
 if __name__ == "__main__":

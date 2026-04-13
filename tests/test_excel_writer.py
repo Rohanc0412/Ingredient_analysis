@@ -4,7 +4,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from helpers.excel_writer import LIT_REVIEW_ALL_SHEET, ensure_review_sheets, load_workbook_context
+from helpers.excel_writer import LIT_REVIEW_ALL_SHEET, apply_output_sheet_layout, ensure_review_sheets, load_workbook_context
 
 
 class ExcelWriterTests(unittest.TestCase):
@@ -47,6 +47,18 @@ class ExcelWriterTests(unittest.TestCase):
         review_sheets = ensure_review_sheets(wb)
 
         self.assertIn(LIT_REVIEW_ALL_SHEET, review_sheets)
+
+    def test_apply_output_sheet_layout_marks_string_cells_as_text(self):
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "Ingredient"
+        ws["A2"] = "- Curcumin"
+        ws["B2"] = 42
+
+        apply_output_sheet_layout(ws, min_row=1)
+
+        self.assertEqual("@", ws["A2"].number_format)
+        self.assertNotEqual("@", ws["B2"].number_format)
 
 
 if __name__ == "__main__":

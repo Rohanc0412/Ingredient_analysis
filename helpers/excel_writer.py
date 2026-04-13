@@ -228,6 +228,10 @@ def apply_output_sheet_layout(ws, *, min_row: int = 1, max_width: float = MAX_OU
                 pass
         for col_idx in range(1, ws.max_column + 1):
             cell = ws.cell(row=row_idx, column=col_idx)
+            if isinstance(cell.value, str):
+                # Preserve manual edits for bullet-style text like "- Curcumin" by
+                # forcing Excel to treat populated string cells as text.
+                cell.number_format = "@"
             base_alignment = cell.alignment or Alignment()
             cell.alignment = copy_alignment_with_wrap(base_alignment)
 

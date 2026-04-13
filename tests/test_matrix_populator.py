@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from populator_ingredient_matrix.cli import load_records, normalize_key
+from populator_ingredient_matrix.cli import extract_answer, load_records, normalize_key
 
 
 class MatrixPopulatorTests(unittest.TestCase):
@@ -78,9 +78,12 @@ class MatrixPopulatorTests(unittest.TestCase):
                 "- Human RCT",
                 record[normalize_key("Clinical Evidence Level (Human RCT, Human Observational, Animal, In-vitro)")],
             )
-            self.assertEqual("12", record[normalize_key("Number of Clinical Studies")])
             self.assertEqual(
-                "- Weight loss improved",
+                "- More than 12 studies reported\n12",
+                record[normalize_key("Number of Clinical Studies")],
+            )
+            self.assertEqual(
+                "- Weight loss improved\n4",
                 record[normalize_key("Key Clinical Outcomes (Weight Loss %, Appetite Reduction, HbA1c, etc.)")],
             )
             self.assertEqual(
@@ -100,6 +103,25 @@ class MatrixPopulatorTests(unittest.TestCase):
                 "- Fiber\n- Chromium",
                 record[normalize_key("Synergy Ingredients Commonly Used")],
             )
+
+    def test_extract_answer_recursively_reads_dynamic_shapes(self):
+        value = {
+            "result": {
+                "headline": "Supports mitochondrial function",
+                "details": {
+                    "short_text": "Improves fatty acid transport",
+                    "bullets": ["- Human data available", "- Favorable safety profile"],
+                },
+            },
+            "sources": [{"id": 1}],
+        }
+
+        answer = extract_answer(value)
+
+        self.assertIn("Supports mitochondrial function", answer)
+        self.assertIn("Improves fatty acid transport", answer)
+        self.assertIn("- Human data available", answer)
+        self.assertIn("- Favorable safety profile", answer)
 
 
 if __name__ == "__main__":

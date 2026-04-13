@@ -153,10 +153,23 @@ def _read_prompt(path: Path) -> str | None:
     return None
 
 
-def build_system_prompt() -> str:
+def build_system_prompt(headers: list[str]) -> str:
     from_file = _read_prompt(PROMPTS_DIR / "paper_extraction_system.txt")
     if from_file:
-        return from_file.strip() + "\n"
+        normalized_headers = normalize_headers(headers)
+        schema_lines = ['{']
+        for idx, header in enumerate(normalized_headers):
+            suffix = "," if idx < len(normalized_headers) - 1 else ""
+            schema_lines.append(f'"{header}": ""{suffix}')
+        schema_lines.append('}')
+        return (
+            from_file.strip()
+            + "\n\nTEMPLATE HEADERS\n\nUse these exact JSON keys from the workbook template.\n\n"
+            + "\n".join(f"- {header}" for header in normalized_headers)
+            + "\n\nJSON OUTPUT SCHEMA\n\nReturn exactly one JSON object using these exact keys:\n\n"
+            + "\n".join(schema_lines)
+            + "\n"
+        )
     return (
         "You extract structured fields for an Excel sheet from research paper text.\n"
         "Return ONLY valid JSON.\n"
@@ -430,7 +443,7 @@ async def _run(*, args, xlsx_path: Path, pdf_root: Path, usage_tracker: LLMUsage
     if args.dump_text:
         text_dir.mkdir(parents=True, exist_ok=True)
 
-    system_prompt = build_system_prompt()
+    system_prompt = build_system_prompt(headers)
     model_extract = config.model
 
     workers = max(1, int(args.workers or 1))
