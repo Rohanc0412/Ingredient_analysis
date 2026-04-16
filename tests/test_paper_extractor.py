@@ -51,8 +51,6 @@ class PaperExtractorTests(unittest.TestCase):
                 "Journal / Source": "Foods",
                 "Population": "Adults",
             },
-            ref_number=1,
-            fallback_primary_ingredient="Fallback Ingredient",
         )
 
         self.assertEqual("Resveratrol", row["Ingredient"])
@@ -63,6 +61,7 @@ class PaperExtractorTests(unittest.TestCase):
         self.assertEqual("Adults", row["Population"])
 
     def test_flatten_llm_to_excel_supports_primary_ingredient_alias(self):
+        # LLM key "Primary Ingredient" should fuzzy-match to template header "Ingredient"
         headers = ["Ingredient", "Title"]
 
         row = flatten_llm_to_excel(
@@ -71,8 +70,6 @@ class PaperExtractorTests(unittest.TestCase):
                 "Primary Ingredient": "Urolithin A",
                 "Title": "Example Title",
             },
-            ref_number=1,
-            fallback_primary_ingredient=None,
         )
 
         self.assertEqual("Urolithin A", row["Ingredient"])
@@ -92,8 +89,6 @@ class PaperExtractorTests(unittest.TestCase):
                     "population": "Adults",
                 },
             },
-            ref_number=1,
-            fallback_primary_ingredient=None,
         )
 
         self.assertEqual("2024", row["Year"])

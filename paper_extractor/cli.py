@@ -15,8 +15,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import re
+
 from helpers.env import load_dotenv
-from helpers.excel_writer import load_workbook_context, save_workbook, write_paper_row
+from helpers.excel_writer import FILE_INDEX_SHEET, PDF_SOURCE_HEADER, load_workbook_context, save_workbook, write_paper_row
 from helpers.file_discovery import sorted_glob_files, sorted_rglob_files
 from helpers.llm_openrouter import LLMClient, LLMUsage, LLMUsageTracker, load_llm_config
 from helpers.logging_utils import get_logger, resolve_log_dir
@@ -34,12 +36,6 @@ DEFAULT_TEMPLATE_DIR = Path("input") / "templates"
 DEFAULT_TEMPLATE_GLOB = "weight_management_paper_extraction_template*.xlsx"
 DEFAULT_OUTPUT_XLSX = Path("output") / "paper_wise_analysis" / "paper_analysis.xlsx"
 logger = get_logger(__name__, prefix="[ Extractor: ]")
-
-
-KEY_FINDING_HEADERS = (
-    "Key Finding Summary (4–5 sentences)",
-    "Key Finding Summary (4â€“5 sentences)",
-)
 
 
 def _configure_stdout_utf8():
@@ -82,7 +78,7 @@ def _load_processed_relative_paths(wb) -> set[str]:
     Returns a set of normalized relative PDF paths already present in the workbook's
     "File Index" sheet. This is used for --resume.
     """
-    sheet_name = "File Index"
+    sheet_name = FILE_INDEX_SHEET
     if sheet_name not in getattr(wb, "sheetnames", []):
         return set()
     ws = wb[sheet_name]
@@ -123,13 +119,21 @@ def apply_non_llm_fields(
     primary_ingredient: str | None,
     pdf_source: str,
 ):
-    if "Ref #" in headers:
-        row["Ref #"] = str(ref_number)
-    if "Primary Ingredient" in headers and primary_ingredient:
-        if row.get("Primary Ingredient") in (None, "", NOT_AVAILABLE):
-            row["Primary Ingredient"] = str(primary_ingredient).strip() or NOT_AVAILABLE
-    if "pdf_source" in headers:
-        row["pdf_source"] = pdf_source
+    # Use the first column as the ref/ID column regardless of its name
+    if headers:
+        row[headers[0]] = str(ref_number)
+
+    # Ingredient fallback: find any header whose tokens include "ingredient"
+    if primary_ingredient:
+        for h in headers:
+            tokens = re.split(r"[^a-z0-9]+", h.lower())
+            if "ingredient" in tokens and row.get(h, NOT_AVAILABLE) == NOT_AVAILABLE:
+                row[h] = str(primary_ingredient).strip() or NOT_AVAILABLE
+                break
+
+    # pdf_source: only set if the template already has a matching column
+    if pdf_source and PDF_SOURCE_HEADER in headers:
+        row[PDF_SOURCE_HEADER] = pdf_source
 
 
 def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
@@ -255,11 +259,6 @@ async def extract_pdf_text(
     return ExtractedText(text=text, chars=chars, cjk_chars=cjk_chars)
 
 
-def _set_key_finding_note(row: dict[str, str], note: str, headers: list[str]) -> None:
-    for h in KEY_FINDING_HEADERS:
-        if h in headers:
-            row[h] = note
-            return
 def main(argv: list[str] | None = None) -> int:
     started_at = datetime.now()
     started_perf = time.perf_counter()
@@ -462,7 +461,6 @@ async def _run(*, args, xlsx_path: Path, pdf_root: Path, usage_tracker: LLMUsage
 
     def build_not_reported_row(ref_number: int, ingredient: str | None, pdf_source_label: str, note: str) -> dict[str, str]:
         row_base = {h: NOT_AVAILABLE for h in headers}
-        _set_key_finding_note(row_base, note, headers)
         apply_non_llm_fields(
             row_base,
             headers=headers,
@@ -579,7 +577,7 @@ async def _run(*, args, xlsx_path: Path, pdf_root: Path, usage_tracker: LLMUsage
             except Exception as e:
                 log(f"Warning: Could not write cache file. Reason: {type(e).__name__}: {e}")
 
-        row_flat = flatten_llm_to_excel(headers, row_llm, ref_number=ref_number, fallback_primary_ingredient=ingredient)
+        row_flat = flatten_llm_to_excel(headers, row_llm)
         apply_non_llm_fields(row_flat, headers=headers, ref_number=ref_number, primary_ingredient=ingredient, pdf_source=pdf_source_label)
         row_final = coerce_row_values(headers, row_flat)
         return _Result(ref_number, rel, sha, extracted.chars, pdf_source_label, row_final)

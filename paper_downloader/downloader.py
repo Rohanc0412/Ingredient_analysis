@@ -57,28 +57,7 @@ def format_duration(total_seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-def _env_flag(name: str, default: bool = False) -> bool:
-    raw = (os.environ.get(name) or "").strip().lower()
-    if not raw:
-        return bool(default)
-    return raw in {"1", "true", "yes", "on"}
-
-
-def should_include_source_dir() -> bool:
-    return _env_flag("PAPER_DOWNLOADER_INCLUDE_SOURCE_DIR", default=True)
-
-
-def resolve_output_dir(
-    *,
-    out_root: Path,
-    ingredient: str,
-    output_source: str,
-    include_source_dir: bool | None = None,
-) -> Path:
-    if include_source_dir is None:
-        include_source_dir = should_include_source_dir()
-    if include_source_dir:
-        return out_root / ingredient / output_source
+def resolve_output_dir(*, out_root: Path, ingredient: str) -> Path:
     return out_root / ingredient
 
 
@@ -90,6 +69,7 @@ def write_download_metadata(
     output_source: str,
     source_preference: str | None,
     source_url: str | None,
+    country: str | None,
     row: dict,
 ) -> Path:
     payload = {
@@ -97,6 +77,7 @@ def write_download_metadata(
         "source": canonicalize_pdf_source_key(output_source) or "unknown_source",
         "source_folder": output_source,
         "source_preference": source_preference,
+        "country": country,
         "doi": row.get("doi"),
         "is_oa": row.get("is_oa"),
         "pdf_url": row.get("pdf_url"),
@@ -648,13 +629,8 @@ async def main():
     started_perf = time.perf_counter()
     exit_code = 0
     load_dotenv(ROOT / ".env", override=False)
-    include_source_dir = should_include_source_dir()
     safe_print(f"Pipeline started at {format_timestamp(started_at)}")
-    safe_print(
-        "PDF output layout: input/pdfs/<ingredient>/<source>/<filename>.pdf"
-        if include_source_dir
-        else "PDF output layout: input/pdfs/<ingredient>/<filename>.pdf"
-    )
+    safe_print("PDF output layout: input/pdfs/<ingredient>/<filename>.pdf")
 
     try:
         papers = load_papers(PAPER_LINKS_DIR)
@@ -712,7 +688,7 @@ async def main():
                 source_preference = None
                 explicit_pdf_url = None
                 ingredient = "unknown_ingredient"
-                input_filename = None
+                country = None
                 source_url = None
                 output_source = "unknown_source"
                 doi_str = ""
@@ -736,7 +712,7 @@ async def main():
                         source_preference = (item or {}).get("source")
                         explicit_pdf_url = (item or {}).get("pdf_url")
                         ingredient = (item or {}).get("ingredient") or "unknown_ingredient"
-                        input_filename = (item or {}).get("filename")
+                        country = (item or {}).get("country")
                         source_url = (item or {}).get("source_url")
 
                     doi_str = str(doi).strip()
@@ -801,6 +777,7 @@ async def main():
                         "doi_host_type": doi_host_type,
                         "doi_resolve_error": doi_resolve_err,
                         "ingredient": ingredient,
+                        "country": country,
                         "source": output_source,
                         "resolved_source": None,
                         "host_type": None,
@@ -826,18 +803,10 @@ async def main():
                         results.append(row)
                         continue
 
-                    out_dir = resolve_output_dir(
-                        out_root=OUT_DIR,
-                        ingredient=ingredient,
-                        output_source=output_source,
-                        include_source_dir=include_source_dir,
-                    )
+                    out_dir = resolve_output_dir(out_root=OUT_DIR, ingredient=ingredient)
                     out_dir.mkdir(parents=True, exist_ok=True)
 
-                    if input_filename:
-                        filename = safe_filename(str(input_filename))
-                    else:
-                        filename = default_filename(doi_str if doi_present else None, (doi_pdf_url or explicit_pdf_url))
+                    filename = default_filename(doi_str if doi_present else None, (doi_pdf_url or explicit_pdf_url))
 
                     out_path = ensure_unique_path(out_dir / filename)
 
@@ -929,6 +898,7 @@ async def main():
                                 output_source=output_source,
                                 source_preference=source_preference,
                                 source_url=source_url,
+                                country=country,
                                 row=row,
                             )
                         except Exception as meta_exc:

@@ -14,10 +14,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 try:
     from helpers.excel_writer import (
-        LIT_REVIEW_ALL_SHEET,
-        LIT_REVIEW_CHINA_SHEET,
-        LIT_REVIEW_GOOGLE_SHEET,
-        LIT_REVIEW_PUBMED_SHEET,
+        FILE_INDEX_SHEET,
         apply_output_sheet_layout,
         autofit_workbook_with_excel,
         write_timestamped_copy,
@@ -25,15 +22,13 @@ try:
     from helpers.logging_utils import get_logger
 except ModuleNotFoundError:
     from helpers.excel_writer import (
-        LIT_REVIEW_ALL_SHEET,
-        LIT_REVIEW_CHINA_SHEET,
-        LIT_REVIEW_GOOGLE_SHEET,
-        LIT_REVIEW_PUBMED_SHEET,
+        FILE_INDEX_SHEET,
         apply_output_sheet_layout,
         autofit_workbook_with_excel,
         write_timestamped_copy,
     )
     from helpers.logging_utils import get_logger
+
 DEFAULT_PAPER_XLSX = ROOT / "output" / "paper_wise_analysis" / "paper_sample_analysis.xlsx"
 DEFAULT_INGREDIENT_XLSX = ROOT / "output" / "ingredient_wise_analysis" / "matrix_weight_management.populated.xlsx"
 DEFAULT_OUTPUT_XLSX = ROOT / "output" / "ingredient_analysis_output.xlsx"
@@ -134,16 +129,6 @@ def merge_workbooks(paper_xlsx: Path, ingredient_xlsx: Path, output_xlsx: Path) 
     paper_wb = load_workbook(paper_xlsx)
     ingredient_wb = load_workbook(ingredient_xlsx)
 
-    required_paper_sheets = [
-        LIT_REVIEW_ALL_SHEET,
-        LIT_REVIEW_CHINA_SHEET,
-        LIT_REVIEW_GOOGLE_SHEET,
-        LIT_REVIEW_PUBMED_SHEET,
-        "File Index",
-    ]
-    missing = [name for name in required_paper_sheets if name not in paper_wb.sheetnames]
-    if missing:
-        raise RuntimeError(f"Paper workbook is missing required sheets: {', '.join(missing)}")
     if not ingredient_wb.worksheets:
         raise RuntimeError(f"Ingredient workbook has no worksheets: {ingredient_xlsx}")
 
@@ -153,14 +138,20 @@ def merge_workbooks(paper_xlsx: Path, ingredient_xlsx: Path, output_xlsx: Path) 
     default_sheet = merged_wb.active
     merged_wb.remove(default_sheet)
 
-    ingredient_source = ingredient_wb.worksheets[0]
-    ingredient_target = merged_wb.create_sheet(title="Ingredient Matrix")
-    copy_sheet(ingredient_source, ingredient_target)
-    apply_output_sheet_layout(ingredient_target, min_row=1)
+    # Copy all sheets from the ingredient workbook first
+    for ws_src in ingredient_wb.worksheets:
+        target_title = ws_src.title if ws_src.title != "Sheet" else "Ingredient Matrix"
+        target = merged_wb.create_sheet(title=target_title)
+        copy_sheet(ws_src, target)
+        apply_output_sheet_layout(target, min_row=1)
 
-    for sheet_name in required_paper_sheets:
-        target = merged_wb.create_sheet(title=sheet_name)
-        copy_sheet(paper_wb[sheet_name], target)
+    # Copy all sheets from the paper workbook (data sheet(s) first, then File Index)
+    data_sheets = [ws for ws in paper_wb.worksheets if ws.title != FILE_INDEX_SHEET]
+    index_sheets = [ws for ws in paper_wb.worksheets if ws.title == FILE_INDEX_SHEET]
+
+    for ws_src in data_sheets + index_sheets:
+        target = merged_wb.create_sheet(title=ws_src.title)
+        copy_sheet(ws_src, target)
         apply_output_sheet_layout(target, min_row=1)
 
     tmp_output = output_xlsx.with_suffix(output_xlsx.suffix + ".tmp")

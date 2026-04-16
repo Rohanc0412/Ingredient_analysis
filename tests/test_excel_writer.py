@@ -4,11 +4,11 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from helpers.excel_writer import LIT_REVIEW_ALL_SHEET, apply_output_sheet_layout, ensure_review_sheets, load_workbook_context
+from helpers.excel_writer import apply_output_sheet_layout, find_data_sheet, load_workbook_context
 
 
 class ExcelWriterTests(unittest.TestCase):
-    def test_accepts_generic_single_sheet_template_with_extractor_headers(self):
+    def test_accepts_generic_single_sheet_template(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "template.xlsx"
             wb = Workbook()
@@ -28,25 +28,36 @@ class ExcelWriterTests(unittest.TestCase):
 
             ctx = load_workbook_context(path)
 
-            self.assertIn(LIT_REVIEW_ALL_SHEET, ctx.review_sheets)
-            self.assertEqual("Ref #", ctx.headers[0])
+            # data_sheet should be set and headers read as-is from the template
+            self.assertIsNotNone(ctx.data_sheet)
+            self.assertEqual("SL No", ctx.headers[0])
+            self.assertIn("Title", ctx.headers)
+            self.assertIn("Primary Ingredient", ctx.headers)
 
-    def test_ensure_review_sheets_renames_generic_template_sheet(self):
+    def test_find_data_sheet_returns_first_non_index_sheet(self):
         wb = Workbook()
         ws = wb.active
-        ws.title = "Sheet1"
-        ws.append(
-            [
-                "SL No",
-                "Title",
-                "Journal / Source",
-                "Primary Ingredient",
-            ]
-        )
+        ws.title = "My Data Sheet"
+        ws.append(["Col A", "Col B", "Col C"])
 
-        review_sheets = ensure_review_sheets(wb)
+        data_ws = find_data_sheet(wb)
 
-        self.assertIn(LIT_REVIEW_ALL_SHEET, review_sheets)
+        self.assertEqual("My Data Sheet", data_ws.title)
+
+    def test_find_data_sheet_skips_file_index(self):
+        from helpers.excel_writer import FILE_INDEX_SHEET
+        wb = Workbook()
+        # Rename active sheet to File Index
+        ws_index = wb.active
+        ws_index.title = FILE_INDEX_SHEET
+        ws_index.append(["Ref #", "Path", "SHA256"])
+        # Add a real data sheet
+        ws_data = wb.create_sheet("Extraction Results")
+        ws_data.append(["Ingredient", "Year", "Study Type"])
+
+        data_ws = find_data_sheet(wb)
+
+        self.assertEqual("Extraction Results", data_ws.title)
 
     def test_apply_output_sheet_layout_marks_string_cells_as_text(self):
         wb = Workbook()

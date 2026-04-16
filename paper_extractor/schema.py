@@ -21,8 +21,8 @@ def normalize_headers(headers: list[str]) -> list[str]:
 
 def _normalize_key(value: object) -> str:
     text = str(value or "").strip().lower()
-    text = text.replace("’", "'").replace("–", "-").replace("—", "-")
-    text = text.replace("â€™", "'").replace("â€“", "-").replace("â€”", "-")
+    text = text.replace("\u2019", "'").replace("\u2013", "-").replace("\u2014", "-")
+    text = text.replace("\u00e2\u20ac\u2122", "'").replace("\u00e2\u20ac\u201d", "-").replace("\u00e2\u20ac\u201c", "-")
     text = re.sub(r"[^a-z0-9]+", "", text)
     return text
 
@@ -87,10 +87,15 @@ def coerce_row_values(headers: list[str], data: dict[str, Any]) -> dict[str, str
 def flatten_llm_to_excel(
     headers: list[str],
     llm_data: dict[str, Any] | None,
-    *,
-    ref_number: int,
-    fallback_primary_ingredient: str | None,
 ) -> dict[str, str]:
+    """
+    Map LLM JSON output keys to template headers via fuzzy matching.
+
+    No column names are hardcoded — all mapping is driven by the headers
+    list read from the actual template. Non-LLM fields (ref numbers,
+    ingredient fallbacks, pdf_source) are applied separately by the caller
+    via apply_non_llm_fields().
+    """
     row: dict[str, str] = {h: NOT_AVAILABLE for h in headers}
     source = llm_data if isinstance(llm_data, dict) else {}
     flattened = _flatten_llm_data(source)
@@ -102,12 +107,5 @@ def flatten_llm_to_excel(
         if value is None:
             continue
         row[h] = value
-
-    if "Ref #" in headers:
-        row["Ref #"] = str(ref_number)
-
-    for ingredient_header in ("Primary Ingredient", "Ingredient"):
-        if ingredient_header in headers and row.get(ingredient_header, NOT_AVAILABLE) == NOT_AVAILABLE and fallback_primary_ingredient:
-            row[ingredient_header] = str(fallback_primary_ingredient).strip() or NOT_AVAILABLE
 
     return row

@@ -12,17 +12,12 @@ from pathlib import Path
 from helpers.env import load_dotenv
 from helpers.file_discovery import sorted_rglob_files
 from helpers.logging_utils import get_logger
-from helpers.pdf_metadata import infer_pdf_source_key, pdf_metadata_path, resolve_metadata_root
+from helpers.pdf_metadata import pdf_metadata_path, resolve_metadata_root
 
 
 DEFAULT_PDF_ROOT = Path("input") / "pdfs"
 DEFAULT_QUARANTINE_ROOT = Path("output") / "quarantine" / "pdf_dedupe_quarantine"
 DEFAULT_REPORT_ROOT = Path("output") / "quarantine" / "pdf_dedupe_reports"
-SOURCE_PRIORITY = {
-    "pubmed": 0,
-    "china": 1,
-    "google_scholar": 2,
-}
 logger = get_logger(__name__, prefix="[ Dedupe: ]")
 
 
@@ -61,15 +56,6 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def detect_source_name(pdf_root: Path, pdf_path: Path) -> str:
-    return infer_pdf_source_key(pdf_root, pdf_path) or ""
-
-
-def canonical_sort_key(pdf_root: Path, pdf_path: Path) -> tuple[int, str]:
-    source_name = detect_source_name(pdf_root, pdf_path)
-    rel = str(pdf_path.relative_to(pdf_root)).replace("\\", "/").lower()
-    return (SOURCE_PRIORITY.get(source_name, 99), rel)
-
 
 @dataclass(frozen=True)
 class DuplicateGroup:
@@ -89,7 +75,7 @@ def find_duplicate_groups(pdf_root: Path, pdf_paths: list[Path]) -> list[Duplica
     for sha256, paths in sorted(by_hash.items()):
         if len(paths) <= 1:
             continue
-        ordered = sorted(paths, key=lambda p: canonical_sort_key(pdf_root, p))
+        ordered = sorted(paths, key=lambda p: str(p.relative_to(pdf_root)).replace("\\", "/").lower())
         kept_path = ordered[0]
         duplicate_paths = tuple(ordered[1:])
         groups.append(

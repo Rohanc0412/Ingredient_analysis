@@ -74,17 +74,4 @@ def infer_pdf_source_key(pdf_root: Path, pdf_path: Path) -> str | None:
         key = canonicalize_pdf_source_key(metadata.get(field))
         if key and key not in {"unknown", "unknown_source"}:
             return key
-
-    try:
-        rel = pdf_path.relative_to(pdf_root)
-    except Exception:
-        return None
-
-    parts = rel.parts
-    if len(parts) < 3:
-        return None
-
-    key = canonicalize_pdf_source_key(parts[1])
-    if key and key not in {"unknown", "unknown_source"}:
-        return key
     return None
