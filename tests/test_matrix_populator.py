@@ -3,7 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from populator_ingredient_matrix.cli import extract_answer, load_records, normalize_key
+from openpyxl import Workbook, load_workbook
+
+from populator_ingredient_matrix.cli import extract_answer, load_records, normalize_key, populate_workbook
 
 
 class MatrixPopulatorTests(unittest.TestCase):
@@ -122,6 +124,49 @@ class MatrixPopulatorTests(unittest.TestCase):
         self.assertIn("Improves fatty acid transport", answer)
         self.assertIn("- Human data available", answer)
         self.assertIn("- Favorable safety profile", answer)
+
+    def test_load_records_uses_template_header_for_ingredient_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = {
+                "ingredient": "Berberine",
+                "fields": {
+                    "Evidence Level": {"category": "Human"},
+                },
+            }
+            (root / "example.json").write_text(json.dumps(payload), encoding="utf-8")
+
+            records = load_records(root, template_headers=["Primary Ingredient", "Evidence Level"])
+
+            self.assertEqual("Berberine", records[0][normalize_key("Primary Ingredient")])
+
+    def test_populate_workbook_uses_detected_template_header_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template_path = root / "template.xlsx"
+            output_path = root / "output.xlsx"
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Matrix"
+            ws["A1"] = "Weight Management Ingredient Matrix"
+            ws.append([None, None])
+            ws.append(["Primary Ingredient", "Evidence Level"])
+            wb.save(template_path)
+
+            populate_workbook(
+                template_path,
+                output_path,
+                [{normalize_key("Primary Ingredient"): "Berberine", normalize_key("Evidence Level"): "Human RCT"}],
+            )
+
+            result_wb = load_workbook(output_path)
+            result_ws = result_wb["Matrix"]
+
+            self.assertEqual("Primary Ingredient", result_ws["A3"].value)
+            self.assertEqual("Evidence Level", result_ws["B3"].value)
+            self.assertEqual("Berberine", result_ws["A4"].value)
+            self.assertEqual("Human RCT", result_ws["B4"].value)
 
 
 if __name__ == "__main__":

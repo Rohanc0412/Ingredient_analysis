@@ -6,9 +6,7 @@ import shutil
 import unicodedata
 from pathlib import Path
 
-from openpyxl import load_workbook
-
-from helpers.excel_writer import apply_output_sheet_layout, autofit_workbook_with_excel, write_timestamped_copy
+from helpers.excel_writer import apply_output_sheet_layout, autofit_workbook_with_excel, load_workbook_context, write_timestamped_copy
 from helpers.env import load_dotenv
 from helpers.file_discovery import sorted_glob_files
 from helpers.logging_utils import get_logger
@@ -115,8 +113,31 @@ def extract_answer(value) -> str:
     return str(value)
 
 
-def load_records(input_dir: Path) -> list[dict[str, str]]:
+def infer_ingredient_header_key(headers: list[str]) -> str | None:
+    normalized_headers = [normalize_key(header) for header in headers if str(header).strip()]
+
+    for header_key in normalized_headers:
+        if header_key == normalize_key("Ingredient"):
+            return header_key
+
+    preferred_tokens = (
+        ("ingredient",),
+        ("primary", "ingredient"),
+        ("active", "ingredient"),
+        ("botanical",),
+        ("compound",),
+    )
+    for tokens in preferred_tokens:
+        for header_key in normalized_headers:
+            if all(token in header_key for token in tokens):
+                return header_key
+
+    return None
+
+
+def load_records(input_dir: Path, *, template_headers: list[str] | None = None) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
+    ingredient_header_key = infer_ingredient_header_key(template_headers or []) or normalize_key("Ingredient")
     for path in sorted_glob_files(input_dir, "*.json"):
         payload = json.loads(path.read_text(encoding="utf-8"))
         fields = payload.get("fields", {})
@@ -125,8 +146,8 @@ def load_records(input_dir: Path) -> list[dict[str, str]]:
             for key, value in fields.items()
         }
         ingredient = payload.get("ingredient")
-        if ingredient and not record.get(normalize_key("Ingredient")):
-            record[normalize_key("Ingredient")] = str(ingredient)
+        if ingredient and ingredient_header_key and not record.get(ingredient_header_key):
+            record[ingredient_header_key] = str(ingredient)
         records.append(record)
     return records
 
@@ -135,13 +156,12 @@ def populate_workbook(template_path: Path, output_path: Path, records: list[dict
     output_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(template_path, output_path)
 
-    wb = load_workbook(output_path)
-    ws = wb[wb.sheetnames[0]]
+    ctx = load_workbook_context(output_path)
+    wb = ctx.wb
+    ws = ctx.data_sheet
+    normalized_headers = [normalize_key(header) for header in ctx.headers]
 
-    headers = [ws.cell(1, col).value or "" for col in range(1, ws.max_column + 1)]
-    normalized_headers = [normalize_key(str(header)) for header in headers]
-
-    start_row = 2
+    start_row = ctx.header_row_idx + 1
     for row_offset, record in enumerate(records):
         row_idx = start_row + row_offset
         for col_idx, header_key in enumerate(normalized_headers, start=1):
@@ -165,7 +185,8 @@ def main() -> int:
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory not found: {input_dir}")
 
-    records = load_records(input_dir)
+    template_ctx = load_workbook_context(template_path)
+    records = load_records(input_dir, template_headers=template_ctx.headers)
     if not records:
         raise RuntimeError(f"No JSON files found in {input_dir}")
 
