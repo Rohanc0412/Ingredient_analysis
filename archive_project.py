@@ -2,7 +2,7 @@
 archive_project.py
 
 Archives all input/ and output/ contents under a named project folder,
-then clears input/ and output/ (preserving .gitkeep files).
+then clears input/, output/, and selected cache directories.
 
 Usage:
     python archive_project.py --project <name> [--archive-dir <path>] [--dry-run]
@@ -19,17 +19,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
-from helpers.env import load_dotenv  # noqa: E402 — must come after ROOT is set
+from helpers.env import load_dotenv  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
 INPUT_DIR = ROOT / "input"
 OUTPUT_DIR = ROOT / "output"
+CACHE_DIRS_TO_CLEAR = (
+    (ROOT / ".pytest_cache", True),
+    (ROOT / ".deepeval", True),
+    (ROOT / "paper_extractor" / "cache", False),
+    (ROOT / "paper_summarizer" / "cache", False),
+)
+EXCLUDED_CACHE_SEARCH_ROOTS = (ROOT / ".git", ROOT / ".venv")
 
-
-# ---------------------------------------------------------------------------
-# Resolution helpers
-# ---------------------------------------------------------------------------
 
 def resolve_archive_root(cli_path: str | None) -> Path:
     """Return the archive root directory, prompting the user if not configured."""
@@ -70,14 +73,10 @@ def make_archive_dest(archive_root: Path, project_name: str) -> Path:
     if dest.exists():
         suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
         new_dest = archive_root / f"{project_name}_{suffix}"
-        print(f"\n  '{dest}' already exists — using '{new_dest.name}' instead.")
+        print(f"\n  '{dest}' already exists - using '{new_dest.name}' instead.")
         return new_dest
     return dest
 
-
-# ---------------------------------------------------------------------------
-# Core operations
-# ---------------------------------------------------------------------------
 
 def collect_files(src: Path) -> list[tuple[Path, Path]]:
     """
@@ -87,9 +86,9 @@ def collect_files(src: Path) -> list[tuple[Path, Path]]:
     if not src.exists():
         return []
     return [
-        (f, f.relative_to(src))
-        for f in sorted(src.rglob("*"))
-        if f.is_file() and f.name != ".gitkeep"
+        (path, path.relative_to(src))
+        for path in sorted(src.rglob("*"))
+        if path.is_file() and path.name != ".gitkeep"
     ]
 
 
@@ -101,7 +100,7 @@ def copy_tree(src: Path, dest_base: Path, label: str, dry_run: bool) -> int:
     for abs_path, rel_path in pairs:
         target = dest_dir / rel_path
         if dry_run:
-            print(f"    copy  {abs_path.relative_to(ROOT)}  →  {target}")
+            print(f"    copy  {abs_path.relative_to(ROOT)}  ->  {target}")
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(abs_path, target)
@@ -109,23 +108,47 @@ def copy_tree(src: Path, dest_base: Path, label: str, dry_run: bool) -> int:
     return len(pairs)
 
 
-def clear_tree(src: Path, dry_run: bool) -> int:
+def has_entries(path: Path) -> bool:
+    """Return True when a directory still has children, treating access errors as non-empty."""
+    try:
+        return any(path.iterdir())
+    except OSError:
+        return True
+
+
+def clear_tree(src: Path, dry_run: bool) -> tuple[int, int]:
     """
-    Delete every non-.gitkeep file under src.
-    Subdirectory structure and .gitkeep files are preserved.
+    Delete every non-.gitkeep file under src, then prune empty directories.
+    Directories that still contain .gitkeep are preserved.
     """
     if not src.exists():
-        return 0
+        return 0, 0
 
-    deleted = 0
+    deleted_files = 0
     for item in sorted(src.rglob("*")):
         if item.is_file() and item.name != ".gitkeep":
             if dry_run:
                 print(f"    delete  {item.relative_to(ROOT)}")
             else:
                 item.unlink()
-            deleted += 1
-    return deleted
+            deleted_files += 1
+
+    deleted_dirs = 0
+    directories = sorted(
+        (item for item in src.rglob("*") if item.is_dir()),
+        key=lambda path: len(path.relative_to(src).parts),
+        reverse=True,
+    )
+    for item in directories:
+        if has_entries(item):
+            continue
+        if dry_run:
+            print(f"    rmdir   {item.relative_to(ROOT)}")
+        else:
+            item.rmdir()
+        deleted_dirs += 1
+
+    return deleted_files, deleted_dirs
 
 
 def write_manifest(dest: Path, project_name: str, input_count: int, output_count: int, dry_run: bool) -> None:
@@ -147,23 +170,65 @@ def write_manifest(dest: Path, project_name: str, input_count: int, output_count
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# Entrypoint
-# ---------------------------------------------------------------------------
+def iter_cache_targets() -> list[tuple[Path, bool]]:
+    """Return cache directories to clear and whether their root should be removed."""
+    targets: list[tuple[Path, bool]] = []
+    seen: set[Path] = set()
+
+    for path, remove_root_when_empty in CACHE_DIRS_TO_CLEAR:
+        if path in seen:
+            continue
+        seen.add(path)
+        targets.append((path, remove_root_when_empty))
+
+    for path in sorted(ROOT.rglob("__pycache__")):
+        if not path.is_dir():
+            continue
+        if any(path.is_relative_to(excluded_root) for excluded_root in EXCLUDED_CACHE_SEARCH_ROOTS):
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        targets.append((path, True))
+
+    return targets
+
+
+def clear_cache_dir(cache_dir: Path, *, dry_run: bool, remove_root_when_empty: bool) -> tuple[int, int, bool]:
+    """Clear one cache directory and optionally remove the root if it becomes empty."""
+    if not cache_dir.exists():
+        return 0, 0, False
+
+    deleted_files, deleted_dirs = clear_tree(cache_dir, dry_run)
+    removed_root = False
+
+    if remove_root_when_empty and cache_dir.exists() and not has_entries(cache_dir):
+        if dry_run:
+            print(f"    rmdir   {cache_dir.relative_to(ROOT)}")
+        else:
+            cache_dir.rmdir()
+        removed_root = True
+
+    return deleted_files, deleted_dirs, removed_root
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Archive pipeline inputs/outputs and reset the repo to a clean state."
     )
     parser.add_argument("--project", metavar="NAME", help="Project name for the archive folder.")
-    parser.add_argument("--archive-dir", metavar="PATH", help="Archive root directory (overrides ARCHIVE_ROOT_DIR in .env).")
+    parser.add_argument(
+        "--archive-dir",
+        metavar="PATH",
+        help="Archive root directory (overrides ARCHIVE_ROOT_DIR in .env).",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Preview what would happen without making any changes.")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip the confirmation prompt before clearing.")
     args = parser.parse_args()
 
     if args.dry_run:
         print("=" * 60)
-        print("DRY RUN — no files will be moved or deleted")
+        print("DRY RUN - no files will be moved or deleted")
         print("=" * 60)
 
     archive_root = resolve_archive_root(args.archive_dir)
@@ -174,30 +239,37 @@ def main() -> None:
     print(f"Archive root  : {archive_root}")
     print(f"Destination   : {dest}")
 
-    # --- Count files that will be archived ---
     input_files = collect_files(INPUT_DIR)
     output_files = collect_files(OUTPUT_DIR)
-    total = len(input_files) + len(output_files)
+    archived_file_total = len(input_files) + len(output_files)
+    cache_targets = iter_cache_targets()
+    cache_file_total = sum(len(collect_files(path)) for path, _ in cache_targets if path.exists())
+    cache_dir_total = sum(1 for path, _ in cache_targets if path.exists())
 
-    print(f"\nFiles to archive: {len(input_files)} from input/, {len(output_files)} from output/ ({total} total)")
+    print(
+        f"\nFiles to archive: {len(input_files)} from input/, {len(output_files)} from output/ "
+        f"({archived_file_total} total)"
+    )
+    print(f"Cache cleanup   : {cache_file_total} file(s) across {cache_dir_total} cache directorie(s)")
 
-    if total == 0:
-        print("\nNothing to archive — both input/ and output/ are already empty (only .gitkeep present).")
+    if archived_file_total == 0 and cache_file_total == 0:
+        print("\nNothing to archive or clear - input/, output/, and configured caches are already clean.")
         sys.exit(0)
 
-    # --- Confirmation ---
     if not args.dry_run and not args.yes:
         print()
-        confirm = input(f"This will copy {total} file(s) to '{dest}' and then delete them from input/ and output/.\nProceed? [y/N] ").strip().lower()
+        confirm = input(
+            f"This will copy {archived_file_total} file(s) to '{dest}', clear input/output contents, "
+            f"and remove {cache_file_total} cache file(s).\nProceed? [y/N] "
+        ).strip().lower()
         if confirm not in ("y", "yes"):
             print("Aborted.")
             sys.exit(0)
 
-    # --- Archive ---
     print("\nArchiving input/ ...")
     if args.dry_run:
-        for f, _ in input_files:
-            print(f"    copy  {f.relative_to(ROOT)}")
+        for file_path, _ in input_files:
+            print(f"    copy  {file_path.relative_to(ROOT)}")
     else:
         dest.mkdir(parents=True, exist_ok=True)
         copy_tree(INPUT_DIR, dest, "input", dry_run=False)
@@ -205,24 +277,44 @@ def main() -> None:
 
     print("\nArchiving output/ ...")
     if args.dry_run:
-        for f, _ in output_files:
-            print(f"    copy  {f.relative_to(ROOT)}")
+        for file_path, _ in output_files:
+            print(f"    copy  {file_path.relative_to(ROOT)}")
     else:
         copy_tree(OUTPUT_DIR, dest, "output", dry_run=False)
     print(f"  {len(output_files)} file(s) copied.")
 
-    write_manifest(dest, project_name, len(input_files), len(output_files), args.dry_run)
+    if archived_file_total > 0 or args.dry_run:
+        write_manifest(dest, project_name, len(input_files), len(output_files), args.dry_run)
 
-    # --- Clear ---
     print("\nClearing input/ ...")
-    deleted_input = clear_tree(INPUT_DIR, args.dry_run)
-    print(f"  {deleted_input} file(s) removed.")
+    deleted_input_files, deleted_input_dirs = clear_tree(INPUT_DIR, args.dry_run)
+    print(f"  {deleted_input_files} file(s) removed, {deleted_input_dirs} empty directorie(s) pruned.")
 
     print("\nClearing output/ ...")
-    deleted_output = clear_tree(OUTPUT_DIR, args.dry_run)
-    print(f"  {deleted_output} file(s) removed.")
+    deleted_output_files, deleted_output_dirs = clear_tree(OUTPUT_DIR, args.dry_run)
+    print(f"  {deleted_output_files} file(s) removed, {deleted_output_dirs} empty directorie(s) pruned.")
 
-    # --- Done ---
+    print("\nClearing caches ...")
+    deleted_cache_files = 0
+    deleted_cache_dirs = 0
+    removed_cache_roots = 0
+    for cache_dir, remove_root_when_empty in cache_targets:
+        if not cache_dir.exists():
+            continue
+        print(f"  {cache_dir.relative_to(ROOT)}")
+        cleared_files, pruned_dirs, removed_root = clear_cache_dir(
+            cache_dir,
+            dry_run=args.dry_run,
+            remove_root_when_empty=remove_root_when_empty,
+        )
+        deleted_cache_files += cleared_files
+        deleted_cache_dirs += pruned_dirs
+        removed_cache_roots += int(removed_root)
+    print(
+        f"  {deleted_cache_files} cache file(s) removed, {deleted_cache_dirs} empty directorie(s) pruned, "
+        f"{removed_cache_roots} cache root(s) removed."
+    )
+
     print()
     if args.dry_run:
         print("Dry run complete. No changes were made.")

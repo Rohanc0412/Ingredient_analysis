@@ -20,9 +20,7 @@ tmp/**
 input/**
 !input/**/
 !input/**/.gitkeep
-!input/templates/**
-!input/**/*.ts
 output/**
 !output/**/
 !output/**/.gitkeep
-!output/**/*.ts
+**/cache
